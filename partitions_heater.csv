@@ -1,0 +1,22 @@
+# Partition table for the Heizstabsteuerung (4 MB ESP32).
+#
+# Adapted from the Poolcontroller10 layout. No HomeKit on this device, so the
+# main `nvs` is small (Preferences only). LittleFS holds the embedded web UI;
+# `histdata` is a *dedicated* NVS partition for the power-history ring buffer
+# so it survives both firmware OTA (only app0/app1 written) AND
+# `pio run -t uploadfs` (only spiffs written).
+#
+# Total: 4 MB (0x400000)
+#   nvs           20 KB  (0x5000)   Preferences (config_store)
+#   otadata        8 KB  (0x2000)   OTA slot selector
+#   app0        1856 KB  (0x1D0000) firmware slot 0
+#   app1        1856 KB  (0x1D0000) firmware slot 1
+#   spiffs       256 KB  (0x40000)  LittleFS web UI
+#   histdata      64 KB  (0x10000)  NVS ring buffer for power history
+# Name,     Type,  SubType,   Offset,   Size,     Flags
+nvs,        data,  nvs,       0x9000,   0x5000,
+otadata,    data,  ota,       0xE000,   0x2000,
+app0,       app,   ota_0,     0x10000,  0x1D0000,
+app1,       app,   ota_1,     0x1E0000, 0x1D0000,
+spiffs,     data,  spiffs,    0x3B0000, 0x40000,
+histdata,   data,  nvs,       0x3F0000, 0x10000,
