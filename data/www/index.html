@@ -1,0 +1,1385 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Heizstabsteuerung</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;padding:12px}
+.shell{max-width:900px;margin:0 auto;--max-width:900px}
+@media(min-width:1200px){.shell{max-width:calc(var(--max-width)*1.2)}}
+@media(min-width:1600px){.shell{max-width:calc(var(--max-width)*1.5)}}
+input[type="range"]#widthSlider{width:100%;max-width:200px}
+.hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;padding:14px 18px;background:linear-gradient(135deg,#1e293b,#0f172a);border-radius:12px;border:1px solid #334155;gap:12px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:14px}
+.logo{font-size:32px}
+.ttl{font-size:20px;font-weight:700;color:#f1f5f9}
+.sub{font-size:12px;color:#94a3b8;margin-top:2px}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;background:#0f172a;border:1px solid #334155;border-radius:999px;font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;background:#ef4444}
+.pill.on .dot{background:#22c55e;box-shadow:0 0 8px #22c55e}
+.tabs{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid #334155;overflow-x:auto}
+.tab{background:none;border:none;color:#94a3b8;padding:10px 18px;cursor:pointer;font-size:14px;font-weight:500;border-bottom:2px solid transparent;white-space:nowrap}
+.tab.active{color:#38bdf8;border-bottom-color:#38bdf8}
+.tab:hover:not(.active){color:#cbd5e1}
+.pane{display:none}
+.pane.active{display:block}
+.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:16px;margin-bottom:14px}
+.title{font-size:15px;font-weight:700;color:#f1f5f9;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.m{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:10px}
+.ml{font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.mv{font-size:20px;font-weight:700;color:#38bdf8;font-variant-numeric:tabular-nums}
+.mv.g{color:#22c55e}.mv.w{color:#f59e0b}.mv.r{color:#ef4444}
+.leds{display:flex;flex-wrap:wrap;gap:8px}
+.led{display:flex;align-items:center;gap:8px;padding:6px 12px;background:#0f172a;border:1px solid #334155;border-radius:6px;font-size:13px}
+.ld{width:10px;height:10px;border-radius:50%;background:#475569}
+.ld.on{background:#22c55e;box-shadow:0 0 8px #22c55e}
+.ld.w{background:#f59e0b;box-shadow:0 0 8px #f59e0b}
+button{background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;border:none;padding:10px 18px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;transition:transform .1s}
+button:hover{transform:translateY(-1px)}
+button:active{transform:translateY(0)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.blg{padding:14px 22px;font-size:15px;width:100%}
+.bd{background:linear-gradient(135deg,#ef4444,#dc2626)}
+.bg{background:linear-gradient(135deg,#22c55e,#16a34a)}
+.bm{background:linear-gradient(135deg,#475569,#334155)}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.fg{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
+label{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px}
+input[type=number],input[type=text],select{background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;width:100%;font-family:inherit}
+select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2394a3b8' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10l-5 5z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 10px center;padding-right:30px;cursor:pointer}
+input:focus,select:focus{outline:none;border-color:#38bdf8}
+.hint{font-size:12px;color:#94a3b8;margin-top:4px}
+.switch-row{display:flex;align-items:center;gap:14px}
+.switch{position:relative;display:inline-block;width:64px;height:34px;flex:0 0 auto}
+.switch input{opacity:0;width:0;height:0}
+.switch .track{position:absolute;cursor:pointer;inset:0;background:#334155;border:1px solid #475569;border-radius:34px;transition:.2s}
+.switch .track:before{content:"";position:absolute;height:26px;width:26px;left:3px;top:3px;background:#e2e8f0;border-radius:50%;transition:.2s}
+.switch input:checked+.track{background:#22c55e;border-color:#16a34a}
+.switch input:checked+.track:before{transform:translateX(30px)}
+.switch input:focus+.track{box-shadow:0 0 0 2px rgba(56,189,248,.5)}
+.switch-label{font-size:13px;color:#e2e8f0;text-transform:none;letter-spacing:0;font-weight:600}
+.save-row{display:flex;gap:10px;align-items:center;margin-top:8px}
+.msg{font-size:13px;color:#22c55e;min-height:18px}
+.msg.err{color:#ef4444}
+.chart{width:100%;height:280px;background:#0f172a;border:1px solid #334155;border-radius:8px}
+.chart-legend{display:flex;gap:16px;font-size:12px;color:#94a3b8;margin-top:8px;flex-wrap:wrap}
+.lg-sw{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:6px}
+.hist-chart-wrap{position:relative;width:100%;flex:1;background:#0f172a;border:1px solid rgba(51,65,85,0.6);border-radius:8px;overflow:hidden}
+.hist-back-btn{display:inline-flex;align-items:center;gap:6px;padding:10px 18px;font-size:15px;background:linear-gradient(135deg,#475569,#334155);color:#e2e8f0;border:none;border-radius:8px;cursor:pointer;font-weight:700;min-height:44px;touch-action:manipulation}
+.weblog-wrap{margin-top:12px;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:8px;font-family:ui-monospace,monospace;font-size:11px;color:#94a3b8;max-height:200px;overflow-y:auto}
+.weblog-line{white-space:pre-wrap;line-height:1.4}
+/* History pane: fullscreen on all sizes */
+.pane.active#p-hist{position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:#0f172a;padding:0;margin:0;display:flex;flex-direction:column}
+.pane.active#p-hist>.card{border-radius:0;border:none;margin:0;padding:6px 8px;flex:1;display:flex;flex-direction:column;gap:6px;max-height:100vh}
+.pane.active#p-hist .hist-chart-wrap{border-radius:0;border:none}
+</style>
+</head>
+<body>
+<div class="shell">
+<div class="hdr">
+  <div class="brand"><div class="logo">&#9889;</div><div><div class="ttl">Heizstabsteuerung</div><div class="sub">ESP32 &middot; GP8413 DAC</div></div></div>
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+    <div style="text-align:right;font-size:13px">
+      <div id="sClock" style="font-weight:600;color:#f1f5f9">--:--:--</div>
+      <div id="sDate" style="color:#94a3b8">--.--.----</div>
+    </div>
+    <div class="pill" id="pConn"><div class="dot"></div><span id="sConn">Web</span></div>
+    <div class="pill" id="pMqtt"><div class="dot"></div><span id="sMqtt">MQTT</span></div>
+    <div class="pill" id="pNtp"><div class="dot"></div><span id="sNtp">NTP</span></div>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab active" data-t="status">Status</button>
+  <button class="tab" data-t="drain">Entwässern</button>
+  <button class="tab" data-t="hist">Verlauf</button>
+  <button class="tab" data-t="cfg">Einstellungen</button>
+</div>
+
+<div id="p-status" class="pane active">
+<div class="card"><div class="title">Aktuelle Werte</div>
+<div class="grid">
+<div class="m"><div class="ml">Netzbezug</div><div id="vPd" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">Zu Verbrauchen</div><div id="vPc" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">Heizleistung</div><div id="vWn" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">DAC Output</div><div id="vDa" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">Meter Alter</div><div id="vAg" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">Gain</div><div id="vGa" class="mv">&mdash;</div></div>
+</div>
+</div>
+<div class="card"><div class="title">Status-LEDs</div>
+<div class="leds">
+<div class="led"><div class="ld" id="lReg"></div>Regelung aktiv</div>
+<div class="led"><div class="ld" id="lHeat"></div>Heizstab EIN</div>
+<div class="led"><div class="ld" id="lPump"></div>Pumpe EIN</div>
+<div class="led"><div class="ld" id="lAuto"></div>Pumpe Auto</div>
+<div class="led"><div class="ld" id="lCycle"></div>Zyklus aktiv</div>
+</div>
+<div id="pumpCountdownBanner" style="margin-top:12px;padding:10px 14px;border-radius:8px;background:#0f172a;border:1px solid #1e293b;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+    <span id="pumpCountdownLabel" style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em">N&auml;chster Pumpen-Zyklus</span>
+    <span id="pumpCountdownTime" style="font-size:22px;font-weight:700;font-family:ui-monospace,monospace;color:#38bdf8">&mdash;</span>
+  </div>
+  <div style="height:4px;background:#1e293b;border-radius:2px;overflow:hidden">
+    <div id="pumpCountdownBar" style="height:100%;width:0%;border-radius:2px;transition:width .8s linear;"></div>
+  </div>
+</div>
+</div>
+<div class="card"><div class="title">Externe Sensoren (via MQTT)</div>
+<div class="grid" id="externalSensors">
+<div class="m" id="mSolarAc" style="display:none"><div class="ml">Solar/AC Power</div><div id="vSolarAc" class="mv">&mdash;</div></div>
+</div>
+</div>
+<div class="card"><div class="title">Temperaturen (DS18B20)</div>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))">
+<div class="m"><div class="ml">🛢️ Speicher</div><div id="vTBoiler" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">⬇️ Zulauf</div><div id="vTInlet" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">⬆️ Ablauf</div><div id="vTOutlet" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">⚡ Heizstab</div><div id="vTHrod" class="mv">&mdash;</div></div>
+</div>
+<div class="hint" style="margin-top:8px;font-size:11px;color:#64748b;">Sensoren in <b>Einstellungen → Temperatur-Sensoren</b> zuweisen.</div>
+</div>
+<div class="card"><div class="title">Heizstab-Energie</div>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+<div class="m"><div class="ml">Aktueller Monat</div><div id="vEnCur" class="mv g">&mdash;</div></div>
+<div class="m"><div class="ml">Gesamt seit Start</div><div id="vEnLife" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">Integriert seit</div><div id="vEnStart" class="mv" style="font-size:13px">&mdash;</div></div>
+</div>
+<div class="hint" style="margin-top:12px;font-size:12px;color:#94a3b8;font-weight:600;">Letzte Monate</div>
+<table id="tEnHistory" style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;">
+<tbody></tbody>
+</table>
+<div id="vEnHistoryEmpty" class="hint" style="font-size:11px;color:#64748b;">Noch keine abgeschlossenen Monate.</div>
+<div class="save-row" style="margin-top:10px;">
+<button id="bEnReset" type="button" class="bd" style="padding:6px 14px;font-size:12px;">Zähler zurücksetzen</button>
+</div>
+</div>
+<div class="card"><div class="title">Manuelle Steuerung</div>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+<button id="bReg" class="blg" type="button">Regelung &mdash;</button>
+<button id="bPump" class="blg" type="button">Pumpe &mdash;</button>
+</div>
+<div class="hint" style="margin-top:10px">Wenn die Regelung aktiv ist und Solar&uuml;berschuss vorhanden ist, wird die Pumpe automatisch eingeschaltet. Manueller Pumpenbetrieb &uuml;berschreibt die Automatik. <span id="pumpStatus" style="color:#38bdf8"></span></div>
+</div>
+<div class="card"><div class="title">PID-Regler</div>
+<div class="grid" style="grid-template-columns:1fr 1fr">
+<div class="m"><div class="ml">Modus</div><div id="vPidMode" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">Kp</div><input id="vPidKp" class="mi" type="number" step="0.1" min="0.5" max="30" placeholder="—"></div>
+<div class="m"><div class="ml">Ki</div><input id="vPidKi" class="mi" type="number" step="0.01" min="0.05" max="5" placeholder="—"></div>
+<div class="m"><div class="ml">Solar FF</div><input id="vPidFf" class="mi" type="number" step="1" min="0" max="100" placeholder="—"></div>
+<div class="m"><div class="ml">Integrator</div><div id="vPidInt" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">Autotune</div><div id="vPidAt" class="mv">&mdash;</div></div>
+</div>
+<div class="hint" style="margin-top:8px;font-size:12px;color:#94a3b8;">
+<strong>Kp</strong>: Proportional-Verstärkung (Reaktion auf Fehler). <strong>Ki</strong>: Integral-Verstärkung (ausreißt Fehler über Zeit). <strong>Solar FF</strong>: Feedforward für Solar-Leistung (DAC-counts pro Watt Solar, schneller Reaktion auf Schwankungen).
+</div>
+<div class="row" style="margin-top:10px">
+<button id="bPidMode" type="button" class="blg">Modus wechseln</button>
+<button id="bPidAtStart" type="button" class="blg">Autotune starten</button>
+<button id="bPidAtStop" type="button" class="bd" style="display:none">Autotune stoppen</button>
+<button id="bPidReset" type="button" class="bd">Reset Defaults</button>
+</div>
+<div class="row" style="margin-top:8px">
+<label style="font-size:12px"><input type="checkbox" id="cPidOnlineAdapt"> Online-Adaption aktiv</label>
+</div>
+<div class="hint" style="margin-top:4px;font-size:11px;color:#64748b;">Hinweis: Die Online-Adaption ist nur im Modus "PID" aktiv. Sie passt Kp, Ki und Solar FF automatisch an, um Oszillationen zu vermeiden.</div>
+<div class="hint" style="margin-top:16px;margin-bottom:4px;font-size:12px;color:#94a3b8;font-weight:bold;">
+Zu Verbrauchen / Regelabweichung (letzte 60 Sekunden)
+</div>
+<canvas id="pidErrorChart" width="400" height="150" style="width:100%;height:150px;background:#1e293b;border-radius:4px"></canvas>
+</div>
+</div>
+
+
+<div id="p-cfg" class="pane">
+<div class="card"><div class="title">System</div>
+<div class="grid" style="grid-template-columns:1fr 1fr">
+<div class="m"><div class="ml">IP Adresse</div><div id="vIp" class="mv" style="font-size:13px;font-family:ui-monospace,monospace">&mdash;</div></div>
+<div class="m"><div class="ml">WiFi Netzwerk</div><div id="vSsid" class="mv" style="font-size:13px">&mdash;</div></div>
+<div class="m"><div class="ml">Uptime</div><div id="vUp" class="mv" style="font-size:13px">&mdash;</div></div>
+<div class="m"><div class="ml">Reboots</div><div style="display:flex;gap:8px;align-items:center"><div id="vReboots" class="mv" style="font-size:13px">&mdash;</div><button id="bResetReboots" type="button" class="bm" style="padding:4px 8px;font-size:11px;border-radius:4px">Reset</button></div></div>
+<div class="m"><div class="ml">Letzter Start</div><div id="vBoot" class="mv" style="font-size:13px">&mdash;</div></div>
+<div class="m"><div class="ml">Free Heap</div><div id="vHp" class="mv" style="font-size:13px">&mdash;</div></div>
+<div class="m"><div class="ml">RSSI</div><div id="vRs" class="mv" style="font-size:13px">&mdash;</div></div>
+<div class="m"><div class="ml">Netzwerk-Modus</div><div id="vNetMode" class="mv" style="font-size:13px">&mdash;</div></div>
+<div class="m"><div class="ml">LAN verbunden</div><div id="vLan" class="mv" style="font-size:13px">&mdash;</div></div>
+<div class="m"><div class="ml">Netzwerk aktiv</div><div id="vNet" class="mv" style="font-size:13px">&mdash;</div></div>
+<div class="m"><div class="ml">Letzter NTP-Ping</div><div id="vNtpAge" class="mv" style="font-size:13px">&mdash;</div></div>
+<div class="m"><div class="ml">Temp-Sensoren</div><div id="vTempSensorCount" class="mv" style="font-size:13px;color:#38bdf8">&mdash;</div></div>
+</div>
+<div class="row" style="margin-top:14px">
+<button id="bReboot" type="button" class="bd">Neustart</button>
+</div>
+</div>
+
+<div class="card"><div class="title">Netzwerk</div>
+<div class="hint" style="margin-bottom:14px;font-size:12px;color:#94a3b8;">
+Wähle zwischen WiFi und W5500 LAN. Bei LAN wird zuerst DHCP versucht; bei Fehlschlag fällt das Gerät auf WiFi zurück. Sobald LAN eine IP hat, wird WiFi ausgeschaltet. Änderungen benötigen Neustart.
+</div>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+<div class="fg"><label>Netzwerk-Modus</label>
+<select id="cNetMode">
+<option value="wifi">WiFi</option>
+<option value="lan">LAN (W5500)</option>
+</select>
+<div class="hint">WiFi oder W5500 Ethernet</div>
+</div>
+<div class="fg"><div class="switch-row"><label class="switch"><input type="checkbox" id="cLanDhcp"><span class="track"></span></label><span class="switch-label">LAN DHCP</span></div><div class="hint">DHCP für LAN aktivieren (aus = statische IP)</div></div>
+<div class="fg"><label>LAN IP Adresse</label><input type="text" id="cLanIp" placeholder="192.168.178.60"><div class="hint">Statische IP für LAN (nur wenn DHCP aus)</div></div>
+<div class="fg"><label>LAN Gateway</label><input type="text" id="cLanGw" placeholder="192.168.178.1"><div class="hint">Gateway für LAN</div></div>
+<div class="fg"><label>LAN Subnet Mask</label><input type="text" id="cLanMask" placeholder="255.255.255.0"><div class="hint">Subnet-Maske für LAN</div></div>
+<div class="fg"><label>LAN DNS Server</label><input type="text" id="cLanDns" placeholder="192.168.178.1"><div class="hint">DNS-Server für LAN</div></div>
+</div>
+<div class="save-row"><button id="bSaveNet" type="button" class="bg">Speichern & Neustart</button><div id="mSaveNet" class="msg"></div></div>
+</div>
+
+<div class="card"><div class="title">Regelparameter (Live & persistent)</div>
+<div class="hint" style="margin-bottom:10px;font-size:12px;color:#94a3b8;">
+Werte werden live angezeigt und können direkt bearbeitet werden. Speichern übernimmt die Änderungen in den NVS-Speicher.
+</div>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+<div class="fg"><label>Zero Feed Target (W)</label><input type="number" id="cZft" step="1"><div class="hint">Gewollte Netzbilanz (0 = neutral)</div></div>
+<div class="fg"><label>Max Heating Power (W)</label><input type="number" id="cMax" step="10" min="1" max="2000"><div class="hint">Max. Heizstableistung (1–2000 W)</div></div>
+<div class="fg"><label>Min Power Threshold (W)</label><input type="number" id="cMin" step="1" min="0" max="99"><div class="hint">Unterer Schwellwert (0–99 W)</div></div>
+<div class="fg"><label>Deadband (W)</label><input type="number" id="cDb" step="1" min="0" max="499"><div class="hint">Hysterese (0–499 W)</div></div>
+<div class="fg"><label>Power Change Threshold (W)</label><input type="number" id="cPct" step="1" min="1" max="100"><div class="hint">Min. Änderung für DAC (1–100 W)</div></div>
+<div class="fg"><label>Max Boiler Temp (°C)</label><input type="number" id="cMbt" step="1" min="0" max="100"><div class="hint">Speicher-Obergrenze (0 = aus, 1–100 °C)</div></div>
+<div class="fg"><label>Max Heater Rod Temp (°C)</label><input type="number" id="cMht" step="1" min="0" max="100"><div class="hint">Heizstab-Obergrenze (0 = aus, 1–100 °C)</div></div>
+<div class="fg"><label>Correction Gain (%)</label><input type="number" id="cGn" step="5" min="1" max="150"><div class="hint">PI-Verstärkung (1–150 %, 80 = 0.8)</div></div>
+<div class="fg"><label>Pump Min Runtime (s)</label><input type="number" id="cPmr" step="1" min="5" max="300"><div class="hint">Nachlauf nach Heizung aus (5–300 s)</div></div>
+<div class="fg"><label>Pumpen-Zyklus Intervall (min)</label><input type="number" id="cCyi" step="1" min="0" max="1440"><div class="hint">Alle X Minuten laufen (0–1440 min, 0 = aus)</div></div>
+<div class="fg"><label>Pumpen-Zyklus Dauer (s)</label><input type="number" id="cCyd" step="1" min="0" max="3600"><div class="hint">Dauer des periodischen Zyklus (0–3600 s)</div></div>
+<div class="fg"><label>OneWire Pin (GPIO)</label><input type="number" id="cOwPin" step="1" min="0" max="39"><div class="hint">DS18B20 Daten-Pin (keine: 6-11 Flash, 34-39 input-only). Änderung braucht Neustart!</div></div>
+<div class="fg"><div class="switch-row"><label class="switch"><input type="checkbox" id="cMqttEn"><span class="track"></span></label><span class="switch-label">MQTT Status senden</span></div><div class="hint">Vollständigen Status an MQTT-Topic publizieren</div></div>
+<div class="fg"><label>MQTT Status Intervall (s)</label><input type="number" id="cMqttInt" step="1" min="0" max="3600"><div class="hint">0 = bei jeder Änderung (mit CRC-Dedupe)</div></div>
+</div>
+<div class="save-row"><button id="bSave" type="button" class="bg">Speichern</button><div id="mSave" class="msg"></div></div>
+</div>
+
+<div class="card"><div class="title">Filter</div>
+<div class="hint" style="margin-bottom:10px;font-size:12px;color:#94a3b8;">Pumpenlogik und PV-Glättungsfilter. Werden persistent gespeichert.</div>
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+<div class="fg"><div class="switch-row"><label class="switch"><input type="checkbox" id="cPtc"><span class="track"></span></label><span class="switch-label">Temp-Bedingung Pumpe</span></div><div class="hint">Pumpe läuft automatisch nur wenn Heizstab-Fühler &gt; Speicher</div></div>
+<div class="fg"><label>Pump-Hysterese (°C)</label><input type="number" id="cPtHy" step="0.5" min="0" max="30"><div class="hint">Pumpe bleibt an bis Heizstab um X°C unter Speicher liegt (verhindert Pendeln)</div></div>
+<div class="fg"><div class="switch-row"><label class="switch"><input type="checkbox" id="cVolEn"><span class="track"></span></label><span class="switch-label">PV-Glättungsfilter aktiv</span></div><div class="hint">Heizung blockiert solange PV-Leistung zu volatil ist</div></div>
+<div class="fg"><label>Glättungs-Fenster (min)</label><input type="number" id="cVolWm" step="1" min="1" max="15"><div class="hint">Zeitfenster für Mittelwert und Schwankungsberechnung (1–15 min)</div></div>
+<div class="fg"><label>Volatiliäts-Schwelle (W)</label><input type="number" id="cVolTh" step="10" min="0" max="5000"><div class="hint">Max. Schwankungsbreite (W) bevor Heizung blockiert wird</div></div>
+<div class="fg"><div class="switch-row"><label class="switch"><input type="checkbox" id="cHistAvg"><span class="track"></span></label><span class="switch-label">History-Mittelung aktiv</span></div><div class="hint">An: zeit-gewichteter Mittelwert je Intervall. Aus: aktueller Momentanwert wird gespeichert.</div></div>
+</div>
+<div id="vVolStatus" style="margin-top:8px;font-size:12px;color:#94a3b8;"></div>
+<div class="save-row"><button id="bSaveFilter" type="button" class="bg">Speichern</button><div id="mSaveFilter" class="msg"></div></div>
+</div>
+
+<div class="card"><div class="title">Temperatur-Sensoren (DS18B20)</div>
+<div class="hint" style="margin-bottom:10px;font-size:12px;color:#94a3b8;">
+OneWire-Bus auf <b id="vTempBusPin">GPIO15</b> · Pull-up 4.7&nbsp;kΩ gegen 3.3&nbsp;V.
+Sensor anfassen → der Wert in der Liste steigt → so identifizieren.
+</div>
+<div class="row" style="margin-bottom:10px;gap:8px;">
+<button id="bTempScan" type="button" class="bm" style="padding:6px 14px;font-size:12px;">Sensoren scannen</button>
+<span id="mTempScan" class="msg" style="font-size:12px;"></span>
+</div>
+<div id="tempSensorList" style="display:none;margin-bottom:10px;">
+<table style="width:100%;border-collapse:collapse;font-size:12px;">
+<thead><tr style="text-align:left;border-bottom:1px solid #334155;">
+<th style="padding:6px 4px;color:#94a3b8;">ROM</th>
+<th style="padding:6px 4px;color:#94a3b8;">Aktuell</th>
+<th style="padding:6px 4px;color:#94a3b8;">Rolle</th>
+</tr></thead>
+<tbody id="tempSensorRows"></tbody>
+</table>
+</div>
+<div class="save-row"><button id="bTempSave" type="button" class="bg" disabled>Zuweisung speichern</button><div id="mTempSave" class="msg"></div></div>
+</div>
+
+<div class="card"><div class="title">Debug-Log</div><div id="webLog" class="weblog-wrap"></div></div>
+
+</div>
+
+<div id="p-drain" class="pane">
+<div class="card"><div class="title">Entwässern Kompressor</div>
+<div class="hint" style="margin-bottom:12px;font-size:12px;color:#94a3b8;">
+Relais schaltet für gewählte Dauer ein, dann automatisch aus. Manuell abbrechbar.
+</div>
+<div class="grid" style="grid-template-columns:1fr 1fr">
+<div class="m"><div class="ml">Status</div><div id="vDrainStatus" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">Verbleibend</div><div id="vDrainRemaining" class="mv">&mdash;</div></div>
+</div>
+<div class="row" style="margin-top:14px;gap:12px">
+<button id="bDrain1s" type="button" class="bg blg" style="flex:1;font-size:18px;padding:16px">1 Sekunde</button>
+<button id="bDrain2s" type="button" class="bg blg" style="flex:1;font-size:18px;padding:16px">2 Sekunden</button>
+<button id="bDrain3s" type="button" class="bg blg" style="flex:1;font-size:18px;padding:16px">3 Sekunden</button>
+<button id="bDrain10s" type="button" class="bg blg" style="flex:1;font-size:18px;padding:16px">10 Sekunden</button>
+</div>
+<div class="row" style="margin-top:12px">
+<button id="bDrainOff" type="button" class="bd blg" style="width:100%" disabled>Abbrechen</button>
+</div>
+</div>
+</div>
+
+<div id="p-hist" class="pane">
+<div class="card">
+<div class="hist-controls" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+<button type="button" class="hist-back-btn" id="btnHistBack">&#x2190; Zurück</button>
+<select id="histWindowMins" style="padding:10px 14px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:8px;font-size:14px;min-height:40px;touch-action:manipulation;">
+<option value="60">1 h</option>
+<option value="360" selected>6 h</option>
+<option value="720">12 h</option>
+<option value="1440">24 h</option>
+<option value="2880">2 d</option>
+<option value="10080">7 d</option>
+<option value="20160">14 d</option>
+</select>
+<button type="button" id="btnHistRefresh" class="bm" style="padding:4px 10px;font-size:11px;">&#x21BB;</button>
+<button type="button" id="btnHistPoints" class="bm" style="padding:4px 10px;font-size:11px;" title="Datenpunkte ein-/ausblenden">&#x2022;</button>
+<span id="histStatus" style="font-size:11px;color:#94a3b8;margin-left:4px;flex:1;"></span>
+<a href="/api/history.csv" download="power-history.csv" id="btnHistCsv"
+   style="padding:4px 10px;background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;text-decoration:none;font-size:11px;">CSV</a>
+</div>
+<div class="hist-chart-wrap" id="histChartWrap">
+<canvas id="histChart" style="width:100%;height:100%;display:block;"></canvas>
+<div id="histTooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(15,23,42,0.96);border:1px solid #334155;border-radius:6px;padding:8px 12px;font-size:12px;color:#e5e7eb;z-index:10;white-space:nowrap;box-shadow:0 6px 18px rgba(0,0,0,0.5);"></div>
+</div>
+</div>
+</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let state = {};
+let pidErrorBuffer = [];  // Client-side error buffer for chart
+const MAX_ERROR_SAMPLES = 40;
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  $('p-'+t.dataset.t).classList.add('active');
+  if (t.dataset.t === 'hist') loadHistoryData();
+});
+
+function setLed(id, on, warn) {
+  const e = $(id);
+  e.classList.toggle('on', !!on && !warn);
+  e.classList.toggle('w', !!warn);
+}
+
+function drawPidErrorChart() {
+  const canvas = $('pidErrorChart');
+  if (!canvas) return;
+  // Sync canvas drawing buffer to displayed size for crisp rendering
+  const dispW = canvas.clientWidth || 400;
+  const dispH = canvas.clientHeight || 80;
+  if (canvas.width !== dispW) canvas.width = dispW;
+  if (canvas.height !== dispH) canvas.height = dispH;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // Clear
+  ctx.fillStyle = '#1e293b';
+  ctx.fillRect(0, 0, w, h);
+
+  // Draw zero line (always, even if buffer empty)
+  ctx.strokeStyle = '#475569';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, h/2);
+  ctx.lineTo(w, h/2);
+  ctx.stroke();
+
+  // Label
+  ctx.fillStyle = '#64748b';
+  ctx.font = '10px sans-serif';
+  ctx.fillText('±200W', 4, 12);
+  if (pidErrorBuffer.length === 0) {
+    ctx.fillText('warte auf Daten...', w/2 - 40, h/2 + 16);
+    return;
+  }
+  if (pidErrorBuffer.length < 2) return;
+
+  // Draw error line
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const step = w / (MAX_ERROR_SAMPLES - 1);
+  const scale = h / 400;  // +/-200W range
+
+  for (let i = 0; i < pidErrorBuffer.length; i++) {
+    const x = i * step;
+    const y = h/2 - (pidErrorBuffer[i] * scale);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function render(s) {
+  if (s.Powerdraw === undefined || s.wattneeded === undefined || s.correctionGain === undefined) return; // Wait for first full data
+  state = s;
+  $('vPd').textContent = s.Powerdraw.toFixed(1) + ' W';
+  $('vPd').className = 'mv ' + (s.Powerdraw > 20 ? 'r' : s.Powerdraw < -20 ? 'g' : '');
+  $('vPc').textContent = s.powerToConsume + ' W';
+  $('vWn').textContent = s.wattneeded + ' W';
+  $('vDa').textContent = s.DACOutput;
+  $('vAg').textContent = s.powerDrawAge < 0 ? '—' : s.powerDrawAge + ' s';
+  $('vAg').className = 'mv ' + (s.powerDrawAge > 10 ? 'r' : s.powerDrawAge > 5 ? 'w' : 'g');
+  $('vGa').textContent = s.correctionGain.toFixed(2);
+  if (s.solarAcPower !== undefined) {
+    $('vSolarAc').textContent = s.solarAcPower + ' W';
+    $('mSolarAc').style.display = '';
+  }
+  setLed('lReg', s.Regulating);
+  setLed('lHeat', s.heating);
+  setLed('lPump', s.pumpmanualpower || s.pumpautocontrolled);
+  setLed('lAuto', s.pumpautocontrolled);
+  setLed('lCycle', s.pumpCycleActive);
+
+  // Update config input fields with current live values (only if not focused by user)
+  const activeElement = document.activeElement;
+  if (s.zeroFeedTarget !== undefined && activeElement !== $('cZft')) $('cZft').value = s.zeroFeedTarget;
+  if (s.maxHeatingPower !== undefined && activeElement !== $('cMax')) $('cMax').value = s.maxHeatingPower;
+  if (s.minPowerThreshold !== undefined && activeElement !== $('cMin')) $('cMin').value = s.minPowerThreshold;
+  if (s.deadband !== undefined && activeElement !== $('cDb')) $('cDb').value = s.deadband;
+  if (s.powerChangeThreshold !== undefined && activeElement !== $('cPct')) $('cPct').value = s.powerChangeThreshold;
+  if (s.maxBoilerTemp !== undefined && activeElement !== $('cMbt')) $('cMbt').value = s.maxBoilerTemp;
+  if (s.maxHeaterRodTemp !== undefined && activeElement !== $('cMht')) $('cMht').value = s.maxHeaterRodTemp;
+  if (s.correctionGain !== undefined && activeElement !== $('cGn')) $('cGn').value = (s.correctionGain * 100).toFixed(0);
+  if (s.pumpMinRuntime !== undefined && activeElement !== $('cPmr')) $('cPmr').value = s.pumpMinRuntime;
+  if (s.pumpCycleInterval !== undefined && activeElement !== $('cCyi')) $('cCyi').value = s.pumpCycleInterval;
+  if (s.pumpCycleDuration !== undefined && activeElement !== $('cCyd')) $('cCyd').value = s.pumpCycleDuration;
+
+  // Network settings (only populate once on first load to avoid overwriting user edits)
+  if (!netLoaded && s.netMode !== undefined) {
+    $('cNetMode').value = s.netMode;
+    $('cLanDhcp').checked = s.lanDhcp;
+    if (s.lanIp !== undefined) $('cLanIp').value = s.lanIp;
+    if (s.lanGw !== undefined) $('cLanGw').value = s.lanGw;
+    if (s.lanMask !== undefined) $('cLanMask').value = s.lanMask;
+    if (s.lanDns !== undefined) $('cLanDns').value = s.lanDns;
+    netLoaded = true;
+  }
+  if (s.onewirePin !== undefined && activeElement !== $('cOwPin')) $('cOwPin').value = s.onewirePin;
+  if (s.mqttStatusEnabled !== undefined && activeElement !== $('cMqttEn')) $('cMqttEn').checked = s.mqttStatusEnabled;
+  if (s.mqttStatusInterval !== undefined && activeElement !== $('cMqttInt')) $('cMqttInt').value = s.mqttStatusInterval;
+  // PID-Status
+  if (s.controllerMode !== undefined) {
+    $('vPidMode').textContent = s.controllerMode === 'pid' ? 'PID' : 'Classic';
+  }
+  if (s.pidKp !== undefined && document.activeElement !== $('vPidKp')) $('vPidKp').value = s.pidKp.toFixed(2);
+  if (s.pidKi !== undefined && document.activeElement !== $('vPidKi')) $('vPidKi').value = s.pidKi.toFixed(3);
+  if (s.pidSolarFF !== undefined && document.activeElement !== $('vPidFf')) $('vPidFf').value = s.pidSolarFF.toFixed(1);
+  if (s.pidIntegrator !== undefined) $('vPidInt').textContent = s.pidIntegrator.toFixed(0);
+  if (s.autotuneState !== undefined) {
+    $('vPidAt').textContent = s.autotuneState;
+    const atRunning = s.autotuneState !== 'idle' && s.autotuneState !== 'done' && s.autotuneState !== 'failed';
+    $('bPidAtStart').style.display = atRunning ? 'none' : '';
+    $('bPidAtStop').style.display = atRunning ? '' : 'none';
+  }
+  if (s.pidOnlineAdapt !== undefined) {
+    $('cPidOnlineAdapt').checked = s.pidOnlineAdapt;
+  }
+
+  // Update error buffer for chart from SSE (server provides recent_errors array)
+  if (s.recent_errors && Array.isArray(s.recent_errors)) {
+    pidErrorBuffer = s.recent_errors.slice(-MAX_ERROR_SAMPLES);
+    drawPidErrorChart();
+  }
+
+  // MQTT-Status in Headline
+  if (s.mqttConnected !== undefined) {
+    const mqttPill = $('pMqtt');
+    const mqttSpan = $('sMqtt');
+    if (s.mqttConnected) {
+      mqttPill.classList.add('on');
+      mqttSpan.textContent = 'MQTT';
+    } else {
+      mqttPill.classList.remove('on');
+      mqttSpan.textContent = 'MQTT off';
+    }
+  }
+
+  // NTP-Status in Headline
+  if (s.ntpSynced !== undefined) {
+    const ntpPill = $('pNtp');
+    const ntpSpan = $('sNtp');
+    if (s.ntpSynced) {
+      ntpPill.classList.add('on');
+      ntpSpan.textContent = 'NTP sync';
+    } else {
+      ntpPill.classList.remove('on');
+      ntpSpan.textContent = 'NTP pending';
+    }
+  }
+  $('bReg').textContent = 'Regelung ' + (s.Regulating ? 'EIN' : 'AUS');
+  $('bReg').className = 'blg ' + (s.Regulating ? 'bg' : 'bm');
+  const pumpOn = s.pumpmanualpower || s.pumpautocontrolled;
+  $('bPump').textContent = 'Pumpe ' + (pumpOn ? 'EIN' : 'AUS');
+  $('bPump').className = 'blg ' + (pumpOn ? 'bg' : 'bm');
+  const pumpMode = s.pumpmanualpower ? '(manuell)' : s.pumpautocontrolled ? '(automatisch)' : '';
+  $('pumpStatus').textContent = pumpMode;
+  const upd = (id, v) => {
+    const el = $(id);
+    if (document.activeElement !== el && el.value !== String(v)) {
+      el.value = v;
+    }
+  };
+  upd('cZft', s.zeroFeedTarget);
+  upd('cMax', s.maxHeatingPower);
+  upd('cMin', s.minPowerThreshold);
+  upd('cDb', s.deadband);
+  upd('cPct', s.powerChangeThreshold);
+  upd('cMbt', s.maxBoilerTemp);
+  upd('cMht', s.maxHeaterRodTemp);
+  upd('cGn', Math.round(s.correctionGain * 100));
+  upd('cPmr', s.pumpMinRuntime);
+  upd('cCyi', s.pumpCycleInterval);
+  upd('cCyd', s.pumpCycleDuration);
+  upd('cOwPin', s.onewirePin);
+  upd('cMqttInt', s.mqttStatusInterval);
+  if (s.ipAddress !== undefined) $('vIp').textContent = s.ipAddress;
+  if (s.wifiSSID !== undefined) $('vSsid').textContent = s.wifiSSID;
+  if (s.uptime !== undefined) $('vUp').textContent = fmtUp(s.uptime);
+  if (s.rebootCount !== undefined) $('vReboots').textContent = s.rebootCount;
+  if (s.bootEpoch !== undefined) {
+    $('vBoot').textContent = s.bootEpoch > 0
+      ? new Date(s.bootEpoch * 1000).toLocaleString('de-DE')
+      : '—';
+  }
+  if (s.heap !== undefined) $('vHp').textContent = s.heap + ' B';
+  if (s.rssi !== undefined) $('vRs').textContent = s.rssi + ' dBm';
+  if (s.netMode !== undefined) $('vNetMode').textContent = s.netMode.toUpperCase();
+  if (s.lanConnected !== undefined) {
+    $('vLan').textContent = s.lanConnected ? 'Ja' : 'Nein';
+    $('vLan').style.color = s.lanConnected ? '#4ade80' : '#94a3b8';
+  }
+  if (s.netConnected !== undefined) {
+    $('vNet').textContent = s.netConnected ? 'Ja' : 'Nein';
+    $('vNet').style.color = s.netConnected ? '#4ade80' : '#f87171';
+  }
+  if (s.ntpProbeAge !== undefined) {
+    if (s.ntpProbeAge < 0) {
+      $('vNtpAge').textContent = 'noch nie';
+      $('vNtpAge').style.color = '#94a3b8';
+    } else {
+      $('vNtpAge').textContent = 'vor ' + s.ntpProbeAge + ' s';
+      $('vNtpAge').style.color = s.ntpProbeAge < 180 ? '#4ade80' : '#fbbf24';
+    }
+  }
+  if (s.temp_sensor_count !== undefined) $('vTempSensorCount').textContent = s.temp_sensor_count + ' gefunden';
+  if (s.onewirePin !== undefined) {
+    $('vTempBusPin').textContent = 'GPIO' + s.onewirePin;
+  }
+  // DS18B20 Temperaturen (null = kein Sensor zugewiesen / Lesefehler)
+  $('vTBoiler').textContent  = (s.t_boiler === null || s.t_boiler === undefined) ? '—' : s.t_boiler.toFixed(1) + ' °C';
+  $('vTInlet').textContent   = (s.t_inlet  === null || s.t_inlet  === undefined) ? '—' : s.t_inlet.toFixed(1)  + ' °C';
+  $('vTOutlet').textContent  = (s.t_outlet === null || s.t_outlet === undefined) ? '—' : s.t_outlet.toFixed(1) + ' °C';
+  $('vTHrod').textContent    = (s.t_hrod   === null || s.t_hrod   === undefined) ? '—' : s.t_hrod.toFixed(1)   + ' °C';
+
+  // Heizstab-Energie
+  const fmtWh = wh => {
+    if (wh === undefined || wh === null) return '—';
+    return wh >= 1000 ? (wh/1000).toFixed(2) + ' kWh' : wh + ' Wh';
+  };
+  const monthNames = ['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+  if (s.energy_current_wh !== undefined) $('vEnCur').textContent = fmtWh(s.energy_current_wh);
+  if (s.energy_lifetime_wh !== undefined) $('vEnLife').textContent = fmtWh(s.energy_lifetime_wh);
+  if (s.energy_start_epoch !== undefined) {
+    if (s.energy_start_epoch > 1700000000) {
+      const d = new Date(s.energy_start_epoch * 1000);
+      $('vEnStart').textContent = d.toLocaleDateString('de-DE', {day:'2-digit',month:'2-digit',year:'numeric'});
+    } else {
+      $('vEnStart').textContent = '—';
+    }
+  }
+  if (Array.isArray(s.energy_history)) {
+    const tbody = $('tEnHistory').querySelector('tbody');
+    tbody.innerHTML = '';
+    if (s.energy_history.length === 0) {
+      $('vEnHistoryEmpty').style.display = '';
+    } else {
+      $('vEnHistoryEmpty').style.display = 'none';
+      // newest first
+      [...s.energy_history].reverse().forEach(h => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid #1e293b';
+        const m = monthNames[(h.month||1)-1] || h.month;
+        tr.innerHTML = '<td style="padding:6px 4px;color:#94a3b8;">' + m + ' ' + h.year + '</td>' +
+                       '<td style="padding:6px 4px;text-align:right;font-variant-numeric:tabular-nums;color:#38bdf8;">' + fmtWh(h.wh) + '</td>';
+        tbody.appendChild(tr);
+      });
+    }
+  }
+  // Pump cycle countdown – visual banner
+  if (s.nextCycleSec !== undefined) {
+    const banner = $('pumpCountdownBanner');
+    const timeEl = $('pumpCountdownTime');
+    const barEl  = $('pumpCountdownBar');
+    const lblEl  = $('pumpCountdownLabel');
+    if (s.nextCycleSec < 0) {
+      lblEl.textContent = 'Pumpen-Zyklus deaktiviert';
+      lblEl.style.color = '#475569';
+      timeEl.textContent = '—';
+      barEl.style.width = '0%';
+      barEl.style.background = '#334155';
+    } else if (s.nextCycleSec === 0) {
+      lblEl.textContent = '🔄 Pumpen-Zyklus läuft';
+      lblEl.style.color = '#4ade80';
+      timeEl.textContent = 'AKTIV';
+      timeEl.style.color = '#4ade80';
+      barEl.style.width = '100%';
+      barEl.style.background = 'linear-gradient(90deg,#16a34a,#4ade80)';
+    } else {
+      const totalSec = (s.pumpCycleInterval || 360) * 60;
+      const pct = Math.min(100, Math.max(0, (s.nextCycleSec / totalSec) * 100));
+      lblEl.textContent = 'Nächster Pumpen-Zyklus';
+      lblEl.style.color = '#94a3b8';
+      timeEl.style.color = '#38bdf8';
+      barEl.style.background = 'linear-gradient(90deg,#0369a1,#38bdf8)';
+      barEl.style.width = pct + '%';
+      const ch = Math.floor(s.nextCycleSec / 3600);
+      const cm = Math.floor((s.nextCycleSec % 3600) / 60);
+      const cs = s.nextCycleSec % 60;
+      timeEl.textContent = (ch ? String(ch).padStart(2,'0') + ':' : '') + String(cm).padStart(2,'0') + ':' + String(cs).padStart(2,'0');
+    }
+  }
+  // Automatik-Filter: populate settings inputs only once (on first status message)
+  if (!filterLoaded && s.pumpTempCondEnabled !== undefined) {
+    $('cPtc').checked   = s.pumpTempCondEnabled;
+    if (s.pumpTempHystC !== undefined) $('cPtHy').value = s.pumpTempHystC;
+    $('cVolEn').checked = s.volEnabled;
+    $('cVolWm').value   = s.volWindowMin;
+    $('cVolTh').value   = s.volThresholdW;
+    if (s.historyAveraging !== undefined) $('cHistAvg').checked = s.historyAveraging;
+    filterLoaded = true;
+  }
+  // Live status only (never overwrites user input)
+  if (s.volEnabled !== undefined) {
+    const vst = $('vVolStatus');
+    if (!s.volEnabled) { vst.textContent = 'Filter inaktiv (deaktiviert).'; vst.style.color='#94a3b8'; }
+    else if (s.volActive) { vst.textContent = '⚠️ Volatil – Heizung blockiert. Bereich: ' + s.powerRange + ' W · Mittel: ' + s.smoothedPowerdraw + ' W'; vst.style.color='#f87171'; }
+    else { vst.textContent = '✓ Stabil. Bereich: ' + s.powerRange + ' W · Mittel: ' + s.smoothedPowerdraw + ' W'; vst.style.color='#4ade80'; }
+  }
+  // Drain relay status
+  if (s.drainActive !== undefined) {
+    const statusEl = $('vDrainStatus');
+    const remainEl = $('vDrainRemaining');
+    const btn1s = $('bDrain1s');
+    const btn2s = $('bDrain2s');
+    const btn3s = $('bDrain3s');
+    const btn10s = $('bDrain10s');
+    const btnOff = $('bDrainOff');
+    if (s.drainActive) {
+      statusEl.textContent = 'AKTIV';
+      statusEl.style.color = '#4ade80';
+      const rem = Math.max(0, Number(s.drainRemaining) || 0);
+      remainEl.textContent = rem.toFixed(1) + ' s';
+      remainEl.style.color = '#38bdf8';
+      btn1s.disabled = true;
+      btn2s.disabled = true;
+      btn3s.disabled = true;
+      btn10s.disabled = true;
+      btnOff.disabled = false;
+    } else {
+      statusEl.textContent = 'INAKTIV';
+      statusEl.style.color = '#94a3b8';
+      remainEl.textContent = '—';
+      remainEl.style.color = '#94a3b8';
+      btn1s.disabled = false;
+      btn2s.disabled = false;
+      btn3s.disabled = false;
+      btn10s.disabled = false;
+      btnOff.disabled = true;
+    }
+  }
+}
+
+function fmtUp(s) {
+  const d = Math.floor(s/86400), h = Math.floor(s/3600)%24, m = Math.floor(s/60)%60, sec = Math.floor(s)%60;
+  return d+'d ' + String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+}
+
+async function postCmd(cmd, dur = '') {
+  try {
+    let body = 'cmd=' + encodeURIComponent(cmd);
+    if (dur) body += '&dur=' + encodeURIComponent(dur);
+    const r = await fetch('/api/cmd', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body});
+    if (!r.ok) throw new Error(r.status);
+  } catch (e) { console.error(e); }
+}
+
+$('bReg').onclick = () => postCmd(state.Regulating ? 'regulate_off' : 'regulate_on');
+$('bPump').onclick = () => postCmd(state.pumpmanualpower ? 'pump_off' : 'pump_on');
+$('bDrain1s').onclick = () => postCmd('drain_on', '1');
+$('bDrain2s').onclick = () => postCmd('drain_on', '2');
+$('bDrain3s').onclick = () => postCmd('drain_on', '3');
+$('bDrain10s').onclick = () => postCmd('drain_on', '10');
+$('bDrainOff').onclick = () => postCmd('drain_off');
+
+// PID-Buttons
+$('bPidMode').onclick = () => {
+  const newMode = state.controllerMode === 'pid' ? 'classic' : 'pid';
+  fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({controller_mode: newMode})
+  }).catch(console.error);
+};
+$('bPidAtStart').onclick = () => {
+  fetch('/api/pid/autotune', {method: 'POST'}).catch(console.error);
+};
+$('bPidAtStop').onclick = () => {
+  fetch('/api/pid/autotune', {method: 'DELETE'}).catch(console.error);
+};
+$('bPidReset').onclick = () => {
+  if (!confirm('PID-Parameter auf Default zurücksetzen?')) return;
+  fetch('/api/pid/reset', {method: 'POST'}).catch(console.error);
+};
+$('cPidOnlineAdapt').onchange = (e) => {
+  fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({online_adapt: e.target.checked})
+  }).catch(console.error);
+};
+
+// MQTT status switch saves immediately (standalone toggle, not part of the main form)
+$('cMqttEn').onchange = (e) => {
+  fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams({ mqtt_status_enabled: e.target.checked ? '1' : '0' })
+  }).catch(console.error);
+};
+
+// PID parameter direct editing
+const sendPidParam = (param, value) => {
+  fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({[param]: value})
+  }).catch(console.error);
+};
+
+$('vPidKp').onchange = (e) => {
+  const v = parseFloat(e.target.value);
+  if (!isNaN(v) && v >= 0.5 && v <= 30) sendPidParam('pid_kp', v);
+};
+
+$('vPidKi').onchange = (e) => {
+  const v = parseFloat(e.target.value);
+  if (!isNaN(v) && v >= 0.05 && v <= 5) sendPidParam('pid_ki', v);
+};
+
+$('vPidFf').onchange = (e) => {
+  const v = parseFloat(e.target.value);
+  if (!isNaN(v) && v >= 0 && v <= 100) sendPidParam('pid_solar_ff', v);
+};
+
+$('bEnReset').onclick = () => {
+  if (!confirm('Energie-Zähler komplett zurücksetzen (inkl. Historie)?')) return;
+  fetch('/api/energy/reset', {method:'POST'}).catch(()=>{});
+};
+
+$('bReboot').onclick = () => {
+  if (!confirm('Neustart?')) return;
+  fetch('/api/reboot', {method:'POST'}).catch(()=>{});
+  $('sConn').textContent = 'rebooting...';
+};
+
+$('bResetReboots').onclick = () => {
+  if (!confirm('Reboot-Zähler auf 0 zurücksetzen?')) return;
+  fetch('/api/reboots/reset', {method:'POST'})
+    .then(() => { $('vReboots').textContent = '0'; })
+    .catch(() => {});
+};
+
+async function saveConfig() {
+  const body = new URLSearchParams({
+    zero_feed_target: $('cZft').value,
+    max_heating_power: $('cMax').value,
+    min_power_threshold: $('cMin').value,
+    deadband: $('cDb').value,
+    power_change_threshold: $('cPct').value,
+    max_boiler_temp: $('cMbt').value,
+    max_heater_rod_temp: $('cMht').value,
+    correction_gain: $('cGn').value,
+    pump_min_runtime: $('cPmr').value,
+    pump_cycle_interval: $('cCyi').value,
+    pump_cycle_duration: $('cCyd').value,
+    onewire_pin: $('cOwPin').value,
+    mqtt_status_enabled: $('cMqttEn').checked ? '1' : '0',
+    mqtt_status_interval: $('cMqttInt').value
+  });
+  const m = $('mSave');
+  m.className = 'msg'; m.textContent = 'Speichere...';
+  try {
+    const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    m.textContent = 'Gespeichert (NVS)';
+    setTimeout(()=>m.textContent='', 2000);
+  } catch (e) {
+    m.className = 'msg err'; m.textContent = 'Fehler: ' + e.message;
+  }
+}
+
+$('bSave').onclick = saveConfig;
+
+async function saveFilter() {
+  const body = new URLSearchParams({
+    pump_temp_cond:  $('cPtc').checked  ? '1' : '0',
+    pump_temp_hyst:  $('cPtHy').value || '2',
+    vol_enabled:     $('cVolEn').checked ? '1' : '0',
+    vol_window_min:  $('cVolWm').value || '5',
+    vol_threshold_w: $('cVolTh').value || '400',
+    history_averaging: $('cHistAvg').checked ? '1' : '0'
+  });
+  const m = $('mSaveFilter');
+  m.className = 'msg'; m.textContent = 'Speichere...';
+  try {
+    const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    m.textContent = 'Gespeichert (NVS)';
+    filterLoaded = false;
+    setTimeout(()=>m.textContent='', 2000);
+  } catch (e) {
+    m.className = 'msg err'; m.textContent = 'Fehler: ' + e.message;
+  }
+}
+$('bSaveFilter').onclick = saveFilter;
+
+async function saveNet() {
+  const body = new URLSearchParams({
+    net_mode: $('cNetMode').value,
+    lan_dhcp: $('cLanDhcp').checked ? '1' : '0',
+    lan_ip: $('cLanIp').value || '192.168.178.60',
+    lan_gw: $('cLanGw').value || '192.168.178.1',
+    lan_mask: $('cLanMask').value || '255.255.255.0',
+    lan_dns: $('cLanDns').value || '192.168.178.1'
+  });
+  const m = $('mSaveNet');
+  m.className = 'msg'; m.textContent = 'Speichere & starte neu...';
+  try {
+    const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    m.textContent = 'Gespeichert - Neustart...';
+    setTimeout(()=>location.reload(), 1500);
+  } catch (e) {
+    m.className = 'msg err'; m.textContent = 'Fehler: ' + e.message;
+  }
+}
+$('bSaveNet').onclick = saveNet;
+
+// ===== Temperatur-Sensoren (DS18B20) =====================================
+let filterLoaded  = false;   // true after filter settings populated from first SSE message
+let netLoaded     = false;   // true after network settings populated from first SSE message
+let tempScanCache = [];      // letzte Scan-Liste {rom, current_c}
+let tempCfgCache  = {boiler_rom: '', inlet_rom: '', outlet_rom: '', hrod_rom: ''};
+
+async function tempLoadConfig() {
+  try {
+    const r = await fetch('/api/temp/config');
+    if (r.ok) tempCfgCache = await r.json();
+  } catch(e) { /* ignore */ }
+}
+
+async function tempScan() {
+  const m = $('mTempScan');
+  m.className = 'msg'; m.textContent = 'Scanne...';
+  try {
+    await tempLoadConfig();
+    const r = await fetch('/api/temp/scan');
+    if (!r.ok) throw 0;
+    const j = await r.json();
+    tempScanCache = j.sensors || [];
+    renderTempList();
+    m.textContent = tempScanCache.length + ' Sensor(en) gefunden';
+    setTimeout(()=>m.textContent='', 2500);
+  } catch(e) {
+    m.className = 'msg err'; m.textContent = 'Fehler beim Scan';
+  }
+}
+
+function renderTempList() {
+  const tbody = $('tempSensorRows');
+  tbody.innerHTML = '';
+  if (!tempScanCache.length) {
+    $('tempSensorList').style.display = 'none';
+    $('bTempSave').disabled = true;
+    return;
+  }
+  $('tempSensorList').style.display = '';
+  $('bTempSave').disabled = false;
+  tempScanCache.forEach((s, idx) => {
+    const tr = document.createElement('tr');
+    tr.style.borderBottom = '1px solid #1e293b';
+    const valTxt = (s.current_c === null || s.current_c === undefined) ? '—' : s.current_c.toFixed(1) + ' °C';
+    let role = '';
+    if (s.rom === tempCfgCache.boiler_rom)  role = 'boiler';
+    else if (s.rom === tempCfgCache.inlet_rom)  role = 'inlet';
+    else if (s.rom === tempCfgCache.outlet_rom) role = 'outlet';
+    else if (s.rom === tempCfgCache.hrod_rom)   role = 'hrod';
+    tr.innerHTML =
+      '<td style="padding:6px 4px;font-family:ui-monospace,monospace;font-size:11px;">' + s.rom + '</td>' +
+      '<td style="padding:6px 4px;">' + valTxt + '</td>' +
+      '<td style="padding:6px 4px;">' +
+        '<select class="tempRoleSel" data-rom="' + s.rom + '" style="padding:4px 8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:4px;font-size:12px;">' +
+          '<option value=""'        + (role===''        ? ' selected' : '') + '>— nicht zugewiesen —</option>' +
+          '<option value="boiler"'  + (role==='boiler'  ? ' selected' : '') + '>Speicher</option>' +
+          '<option value="inlet"'   + (role==='inlet'   ? ' selected' : '') + '>Heizstab-Zulauf</option>' +
+          '<option value="outlet"'  + (role==='outlet'  ? ' selected' : '') + '>Heizstab-Ablauf</option>' +
+          '<option value="hrod"'    + (role==='hrod'    ? ' selected' : '') + '>Heizstab-Fühler</option>' +
+        '</select>' +
+      '</td>';
+    tbody.appendChild(tr);
+  });
+  // Mutual exclusion: only one sensor per role
+  document.querySelectorAll('.tempRoleSel').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const v = sel.value;
+      if (!v) return;
+      document.querySelectorAll('.tempRoleSel').forEach(other => {
+        if (other !== sel && other.value === v) other.value = '';
+      });
+    });
+  });
+}
+
+async function tempSave() {
+  let boilerRom  = '';
+  let inletRom   = '';
+  let outletRom  = '';
+  let hrodRom    = '';
+  document.querySelectorAll('.tempRoleSel').forEach(sel => {
+    if (sel.value === 'boiler')  boilerRom  = sel.dataset.rom;
+    if (sel.value === 'inlet')   inletRom   = sel.dataset.rom;
+    if (sel.value === 'outlet')  outletRom  = sel.dataset.rom;
+    if (sel.value === 'hrod')    hrodRom    = sel.dataset.rom;
+  });
+  const body = new URLSearchParams({boiler_rom: boilerRom, inlet_rom: inletRom, outlet_rom: outletRom, hrod_rom: hrodRom});
+  const m = $('mTempSave');
+  m.className = 'msg'; m.textContent = 'Speichere...';
+  try {
+    const r = await fetch('/api/temp/assign', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    if (!r.ok) throw 0;
+    m.textContent = 'Gespeichert';
+    tempCfgCache = {boiler_rom: boilerRom, inlet_rom: inletRom, outlet_rom: outletRom, hrod_rom: hrodRom};
+    setTimeout(()=>m.textContent='', 2000);
+  } catch(e) {
+    m.className = 'msg err'; m.textContent = 'Fehler';
+  }
+}
+
+$('bTempScan').onclick = tempScan;
+$('bTempSave').onclick = tempSave;
+
+// Enter-Bestätigung in Eingabefeldern
+['cZft', 'cMax', 'cMin', 'cDb', 'cPct', 'cMbt', 'cMht', 'cGn', 'cPmr', 'cCyi', 'cCyd', 'cOwPin', 'cMqttInt'].forEach(id => {
+  $(id).addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveConfig();
+    }
+  });
+});
+
+// History chart rendering
+let historyData = null;
+let historyChart = null;
+const hiddenHistDatasets = new Set(); // toggled-off legend labels persist across redraws
+let histShowPoints = false;           // user-toggleable via btnHistPoints
+
+// Event-Listener für History-Steuerelemente
+setTimeout(() => {
+  const histWindow = $('histWindowMins');
+  const btnRefresh = $('btnHistRefresh');
+  const btnBack    = $('btnHistBack');
+
+  if (histWindow) histWindow.addEventListener('change', () => loadHistoryData());
+
+  // Fix jitter on orientation/window resize: debounce + full resize
+  let _resizeT = null;
+  const onResize = () => {
+    if (_resizeT) clearTimeout(_resizeT);
+    _resizeT = setTimeout(() => {
+      if (historyChart && document.getElementById('p-hist').classList.contains('active')) {
+        historyChart.resize();
+      }
+    }, 200);
+  };
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', onResize);
+  if (btnRefresh) btnRefresh.onclick = () => loadHistoryData();
+  const btnPoints = $('btnHistPoints');
+  if (btnPoints) {
+    const updatePointsBtn = () => {
+      btnPoints.style.background = histShowPoints
+        ? 'linear-gradient(135deg,#0ea5e9,#0284c7)'
+        : '';
+      btnPoints.style.color = histShowPoints ? '#fff' : '#94a3b8';
+    };
+    updatePointsBtn();
+    btnPoints.onclick = (e) => {
+      e.stopPropagation();
+      histShowPoints = !histShowPoints;
+      updatePointsBtn();
+      if (historyChart) {
+        const r  = histShowPoints ? 2 : 0;
+        const hr = histShowPoints ? 5 : 0;
+        historyChart.data.datasets.forEach(ds => {
+          ds.pointRadius = r;
+          ds.pointHoverRadius = hr;
+        });
+        historyChart.update('none');
+      }
+    };
+  }
+  // Mobile back button: switch back to status tab
+  const goStatus = () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.pane').forEach(x => x.classList.remove('active'));
+    document.querySelector('.tab[data-t="status"]').classList.add('active');
+    $('p-status').classList.add('active');
+  };
+  if (btnBack) btnBack.onclick = goStatus;
+  // NOTE: the whole-pane click-to-return handler was removed so that clicking
+  // the chart legend (to toggle datasets) works reliably. Use the back button.
+}, 100);
+
+async function loadHistoryData() {
+  const mins = parseInt($('histWindowMins').value);
+  const secs = mins * 60;
+  let range = '24h';
+  if (mins <= 60) range = '1h';
+  else if (mins <= 360) range = '6h';
+  else if (mins <= 720) range = '12h';
+  else if (mins <= 1440) range = '24h';
+  else if (mins <= 2880) range = '2d';
+  else if (mins <= 10080) range = '7d';
+  else if (mins <= 20160) range = '14d';
+  else if (mins <= 43200) range = '30d';
+  else range = '90d';
+  
+  try {
+    $('histStatus').textContent = 'Lade...';
+    const r = await fetch('/api/history?range=' + range);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    historyData = await r.json();
+    drawHistoryChart();
+    $('histStatus').textContent = historyData.points.length + ' Datenpunkte';
+    $('btnHistCsv').href = '/api/history.csv?range=' + range;
+  } catch (e) {
+    $('histStatus').textContent = 'Fehler: ' + e.message;
+  }
+}
+
+function drawHistoryChart() {
+  if (!historyData || !historyData.points.length) {
+    const ctx = $('histChart').getContext('2d');
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '13px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('Keine Daten', ctx.canvas.width / 2, ctx.canvas.height / 2);
+    return;
+  }
+
+  const pts = historyData.points;
+  const now = historyData.now_epoch;
+
+  const mins = parseInt($('histWindowMins').value);
+  const isMultiDay = mins > 1440;
+
+  // Sort points chronologically (by dt_sec ascending — dt_sec is negative
+  // age, so more-negative = older). This is a defensive measure in case the
+  // server emits long-term + short-term data that isn't perfectly sorted.
+  pts.sort((a, b) => a.dt_sec - b.dt_sec);
+
+  // Build {x: epochMs, y: value} arrays with explicit null gap markers
+  // inserted whenever consecutive samples are too far apart. This forces
+  // Chart.js (with spanGaps:false) to draw a visible break instead of a
+  // long sloped line across missing intervals.
+  //
+  // Gap detection: we look at the actual interval between consecutive
+  // points.  Because the stream mixes 15-min (long-term) and 5-min
+  // (short-term) data, a single global expectedDt doesn't work.  Instead
+  // we use a local adaptive threshold: gap = max(dtSec * 2.5, 1200)
+  // (i.e. at least 20 minutes, or 2.5× the local step).
+  const buildSeries = (key) => {
+    const out = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const xMs = (now + p.dt_sec) * 1000;
+      // Insert a null marker between this sample and the previous one if
+      // the time gap is too large.
+      if (i > 0) {
+        const dtSec = p.dt_sec - pts[i-1].dt_sec;
+        // Adaptive threshold: 2.5× the expected local interval, with a
+        // minimum of 1200s (20 min) to avoid false gaps at the 15-min→5-min
+        // resolution transition.
+        const thresh = Math.max(dtSec > 0 ? dtSec * 2.5 : 1200, 1200);
+        if (dtSec > thresh) {
+          const prevXMs = (now + pts[i-1].dt_sec) * 1000;
+          out.push({ x: prevXMs + (xMs - prevXMs) / 2, y: null });
+        }
+      }
+      const v = p[key];
+      out.push({ x: xMs, y: (v === undefined || v === null) ? null : v });
+    }
+    return out;
+  };
+
+  const powerdrawData  = buildSeries('pd');
+  const wattneededData = buildSeries('wn');
+  const solarpowerData = buildSeries('sp');
+  const tBoilerData    = buildSeries('tb');
+  const tInletData     = buildSeries('ti');
+  const tOutletData    = buildSeries('to');
+  const tHrodData      = buildSeries('th');
+
+  const hasSolar   = solarpowerData.some(p => p.y !== null && p.y !== 0);
+  const hasTBoiler = tBoilerData.some(p => p.y !== null);
+  const hasTInlet  = tInletData.some(p => p.y !== null);
+  const hasTOutlet = tOutletData.some(p => p.y !== null);
+  const hasTHrod   = tHrodData.some(p => p.y !== null);
+
+  // Toggle-aware point radius (button btnHistPoints flips histShowPoints)
+  const pr  = histShowPoints ? 2 : 0;
+  const phr = histShowPoints ? 5 : 0;
+
+  const fmtTick = (ms) => {
+    const dt = new Date(ms);
+    if (isMultiDay) {
+      return dt.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) + ' ' +
+             dt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    }
+    return dt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const ctx = $('histChart').getContext('2d');
+  
+  if (historyChart) {
+    // Remember which datasets the user toggled off via legend click
+    historyChart.data.datasets.forEach((ds, i) => {
+      if (!historyChart.isDatasetVisible(i)) hiddenHistDatasets.add(ds.label);
+      else hiddenHistDatasets.delete(ds.label);
+    });
+    historyChart.destroy();
+  }
+  
+  const datasets = [
+    {
+      label: 'Netzbezug (W)',
+      data: powerdrawData,
+      borderColor: '#38bdf8',
+      backgroundColor: 'rgba(56, 189, 248, 0.1)',
+      fill: 'origin',
+      tension: 0.3,
+      pointRadius: pr,
+      pointHoverRadius: phr,
+      borderWidth: 2,
+      yAxisID: 'y',
+      spanGaps: false
+    },
+    {
+      label: 'Heizleistung (W)',
+      data: wattneededData,
+      borderColor: '#f59e0b',
+      backgroundColor: 'rgba(245, 158, 11, 0.1)',
+      fill: 'origin',
+      tension: 0.3,
+      pointRadius: pr,
+      pointHoverRadius: phr,
+      borderWidth: 2,
+      yAxisID: 'y',
+      spanGaps: false
+    }
+  ];
+  if (hasSolar) {
+    datasets.push({
+      label: 'Solar/AC Power (W)',
+      data: solarpowerData,
+      borderColor: '#22c55e',
+      backgroundColor: 'rgba(34, 197, 94, 0.1)',
+      fill: 'origin',
+      tension: 0.3,
+      pointRadius: pr,
+      pointHoverRadius: phr,
+      borderWidth: 2,
+      yAxisID: 'y',
+      spanGaps: false
+    });
+  }
+  if (hasTBoiler) {
+    datasets.push({
+      label: 'Speicher (°C)', data: tBoilerData, borderColor: '#ef4444',
+      backgroundColor: 'rgba(239,68,68,0.05)', fill: false, tension: 0.3,
+      pointRadius: pr, pointHoverRadius: phr, borderWidth: 2, yAxisID: 'yT', spanGaps: false,
+      hidden: hiddenHistDatasets.has('Speicher (°C)')
+    });
+  }
+  if (hasTInlet) {
+    datasets.push({
+      label: 'Zulauf (°C)', data: tInletData, borderColor: '#22d3ee',
+      backgroundColor: 'rgba(34,211,238,0.05)', fill: false, tension: 0.3,
+      pointRadius: pr, pointHoverRadius: phr, borderWidth: 2, yAxisID: 'yT', spanGaps: false,
+      hidden: hiddenHistDatasets.has('Zulauf (°C)')
+    });
+  }
+  if (hasTOutlet) {
+    datasets.push({
+      label: 'Ablauf (°C)', data: tOutletData, borderColor: '#a78bfa',
+      backgroundColor: 'rgba(167,139,250,0.05)', fill: false, tension: 0.3,
+      pointRadius: pr, pointHoverRadius: phr, borderWidth: 2, yAxisID: 'yT', spanGaps: false,
+      hidden: hiddenHistDatasets.has('Ablauf (°C)')
+    });
+  }
+  if (hasTHrod) {
+    datasets.push({
+      label: 'Heizstab (°C)', data: tHrodData, borderColor: '#f472b6',
+      backgroundColor: 'rgba(244,114,182,0.05)', fill: false, tension: 0.3,
+      pointRadius: pr, pointHoverRadius: phr, borderWidth: 2, yAxisID: 'yT', spanGaps: false,
+      hidden: hiddenHistDatasets.has('Heizstab (°C)')
+    });
+  }
+
+  historyChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: datasets
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false
+      },
+      plugins: {
+        zoom: {
+          zoom: {
+            wheel: { enabled: true },
+            pinch: { enabled: true },
+            mode: 'x'
+          },
+          pan: {
+            enabled: true,
+            mode: 'x'
+          }
+        },
+        legend: {
+          display: true,
+          position: 'top',
+          align: 'center',
+          labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 12, padding: 8 }
+        },
+        tooltip: {
+          backgroundColor: '#1e293b',
+          titleColor: '#e2e8f0',
+          bodyColor: '#e2e8f0',
+          borderColor: '#334155',
+          borderWidth: 1,
+          callbacks: {
+            // Format the tooltip header (x value) as a localized timestamp.
+            title: (items) => items.length ? fmtTick(items[0].parsed.x) : ''
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'linear',  // linear time axis (epoch ms) for true temporal proportions
+          display: true,
+          grid: { color: '#334155' },
+          ticks: {
+            color: '#94a3b8',
+            maxTicksLimit: 8,
+            callback: (val) => fmtTick(val)
+          }
+        },
+        y: {
+          display: true,
+          position: 'left',
+          grid: {
+            color: '#334155'
+          },
+          ticks: {
+            color: '#94a3b8'
+          },
+          title: { display: true, text: 'W', color: '#94a3b8' }
+        },
+        yT: {
+          display: (hasTBoiler || hasTInlet),
+          position: 'right',
+          grid: { display: false },
+          ticks: { color: '#94a3b8' },
+          title: { display: true, text: '°C', color: '#94a3b8' },
+          suggestedMin: 0,
+          suggestedMax: 80
+        }
+      }
+    }
+  });
+}
+
+// Uhrzeit und Datum aktualisieren
+function updateClock() {
+  const now = new Date();
+  const h = String(now.getHours()).padStart(2, '0');
+  const m = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const mo = String(now.getMonth() + 1).padStart(2, '0');
+  const y = now.getFullYear();
+  $('sClock').textContent = h + ':' + m + ':' + s;
+  $('sDate').textContent = d + '.' + mo + '.' + y;
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+let es;
+function connect() {
+  es = new EventSource('/events');
+  es.addEventListener('open', () => {
+    $('pConn').classList.add('on');
+    $('sConn').textContent = 'Web';
+  });
+  es.addEventListener('status', e => {
+    try {
+      const data = JSON.parse(e.data);
+      // Merge partial updates (fast powerdraw) into existing state
+      for (const k in data) state[k] = data[k];
+      render(state);
+    } catch(err) { console.error(err); }
+  });
+  es.addEventListener('log', e => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.log) appendWebLog(data.log);
+    } catch(err) { console.error(err); }
+  });
+  es.addEventListener('error', () => {
+    $('pConn').classList.remove('on');
+    $('sConn').textContent = 'Web...';
+  });
+}
+connect();
+
+// Web log console
+function appendWebLog(line) {
+  const w = $('webLog');
+  if (!w) return;
+  const d = document.createElement('div');
+  d.className = 'weblog-line';
+  d.textContent = line;
+  w.appendChild(d);
+  while (w.children.length > 40) w.removeChild(w.firstChild);
+  w.scrollTop = w.scrollHeight;
+}
+</script>
+</body></html>
