@@ -1,0 +1,45 @@
+name: Platform IO
+
+on:
+  push:
+    branches: []
+  pull_request:
+    branches: []
+  schedule:
+    - cron: "0 1 * * 6" # Every Saturday at 1AM  
+
+jobs:
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - example: platformio
+          board: default
+
+    runs-on: ubuntu-latest
+    name: Build ${{ matrix.example }}-${{ matrix.board }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+
+      - name: Install Platform IO
+        run:
+          |
+          pip install -U platformio
+          platformio update
+
+      - name: Install Checked out PsychicHttp
+        run:
+          pio lib -g install $GITHUB_WORKSPACE
+
+      - name: Build example 
+        run:
+          |
+          cd examples/${{ matrix.example }}
+          cp src/secret.h src/_secret.h
+          pio run -e ${{ matrix.board }}

@@ -664,14 +664,13 @@ static esp_err_t handleFirmwareUploadChunk(PsychicRequest *req, const String &fi
   return ESP_OK;
 }
 
-static esp_err_t handleFirmwareUploadDone(PsychicRequest *req, PsychicResponse *res) {
-  (void)req;
+static esp_err_t handleFirmwareUploadDone(PsychicRequest *req) {
   if (s_updateUploadOk) {
-    return res->send(200, "text/plain", "ok - firmware uploaded, rebooting");
+    return req->reply(200, "text/plain", "ok - firmware uploaded, rebooting");
   }
   webserver_pauseSSE = false;
   const char *msg = s_updateError[0] ? s_updateError : "Upload fehlgeschlagen";
-  return res->send(500, "text/plain", msg);
+  return req->reply(500, "text/plain", msg);
 }
 
 // ---- Public API --------------------------------------------------------
