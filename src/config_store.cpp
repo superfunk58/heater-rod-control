@@ -17,7 +17,6 @@ extern unsigned long PUMP_CYCLE_DURATION_SEC;
 extern bool  PUMP_TEMP_COND_ENABLED;
 extern float PUMP_TEMP_HYST_C;
 extern volatile bool regulating_power;
-extern String controllerMode;  // "classic" | "pid"
 extern bool  VOL_ENABLED;
 extern int   VOL_WINDOW_MIN;
 extern int   VOL_THRESHOLD_W;
@@ -55,7 +54,6 @@ void load() {
   PUMP_TEMP_COND_ENABLED   = p.getBool  ("ptce",  PUMP_TEMP_COND_ENABLED);
   PUMP_TEMP_HYST_C         = p.getFloat ("pthy",  PUMP_TEMP_HYST_C);
   regulating_power         = p.getBool  ("reg",   regulating_power);
-  controllerMode           = p.getString("cmode", controllerMode);
   VOL_ENABLED              = p.getBool  ("volen", VOL_ENABLED);
   VOL_WINDOW_MIN           = p.getInt   ("volwm", VOL_WINDOW_MIN);
   VOL_THRESHOLD_W          = p.getInt   ("volth", VOL_THRESHOLD_W);
@@ -96,7 +94,6 @@ void save() {
   p.putBool  ("ptce", PUMP_TEMP_COND_ENABLED);
   p.putFloat ("pthy", PUMP_TEMP_HYST_C);
   p.putBool  ("reg",  regulating_power);
-  p.putString("cmode", controllerMode);
   p.putBool  ("volen", VOL_ENABLED);
   p.putInt   ("volwm", VOL_WINDOW_MIN);
   p.putInt   ("volth", VOL_THRESHOLD_W);

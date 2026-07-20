@@ -12,7 +12,6 @@
 #include "history.h"          // Power history ring buffer (dedicated NVS partition)
 #include "energy.h"           // Heizstab Energy integrator (Wh, monthly chunks)
 #include "temp_sensors.h"     // DS18B20 OneWire temp sensors (Boiler + Heizstab-Zulauf)
-#include "pid_controller.h"   // Reiner PID auf DAC mit Online-Adaption + Relay-Autotune
 #include "net_manager.h"      // WiFi/W5500 LAN network management
 #include <LittleFS.h>         // Web UI assets
 #include <time.h>             // NTP-based time for history timestamps
@@ -85,8 +84,6 @@ volatile bool regulating_power = true;
 bool HISTORY_AVERAGING = true;       // History: zeit-gewichtetes Mitteln (true) vs. Momentanwert-Snapshot (false)
 bool heating = false;
 int DACoutput;
-// Reglerwahl: "classic" = Tabelle + Watt-PI (default, kein Bruch), "pid" = reiner PID auf DAC.
-String controllerMode = "classic";
 
 // Pin-Definitionen (ESP32 DevKit v1)
 #define STATUS_LED 2          // GPIO2 = on-board blue LED. ESP32 LED is active-HIGH (HIGH = on).
@@ -341,9 +338,6 @@ void sendupdate(bool force)
   doc["pumpTempHystC"]       = PUMP_TEMP_HYST_C;
   doc["volEnabled"]          = VOL_ENABLED;
   doc["volActive"]           = s_volatileActive;
-
-  // PID-Regler Status (nur Modus, keine internen Reglerdaten)
-  doc["controllerMode"]  = controllerMode;
 
   String jsonString;
   serializeJson(doc, jsonString);
@@ -729,9 +723,6 @@ void setup() {
   History::begin();
   Energy::begin();
 
-  // PID-Regler-State aus NVS laden (auch wenn nicht aktiv ist es harmlos).
-  PidController::begin();
-
   // NTP time for history timestamps. Europe/Berlin with DST handling.
   configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.nist.gov");
 
@@ -764,13 +755,6 @@ static void applyPendingConfig() {
   if (p.hasPumpMinRuntime) PUMP_MIN_RUNTIME_MS = p.pumpMinRuntimeSec * 1000UL;
   if (p.hasPumpCycleInterval) PUMP_CYCLE_INTERVAL_MIN = p.pumpCycleIntervalMin;
   if (p.hasPumpCycleDuration) PUMP_CYCLE_DURATION_SEC = p.pumpCycleDurationSec;
-
-  if (p.hasControllerMode) controllerMode = p.controllerMode;
-
-  if (p.hasPidKp) PidController::setKp(p.pidKp);
-  if (p.hasPidKi) PidController::setKi(p.pidKi);
-  if (p.hasPidSolarFf) PidController::setSolarFf(p.pidSolarFf);
-  if (p.hasOnlineAdapt) PidController::setOnlineAdaptEnabled(p.onlineAdapt);
 
   if (p.hasPumpTempCond) PUMP_TEMP_COND_ENABLED = p.pumpTempCond;
   if (p.hasPumpTempHyst) PUMP_TEMP_HYST_C = p.pumpTempHyst;
@@ -982,15 +966,8 @@ void loop() {
     sendupdate();
   }
 
-  // Always feed the PID error stat buffer so the UI mini-chart has data
-  // (also in classic mode). recordSample() is rate-limited internally to 1Hz.
-  PidController::recordSample(powerToConsume, currentTime);
-
-  // -------- Reglerwahl: PID übernimmt die komplette Regelung -------------
-  if (controllerMode == "pid") {
-    PidController::regulate(currentTime);
-    PidController::tickAdapt(currentTime);
-  } else if (!skipRegulation && regulating_power) {
+  // -------- Classic regulator (only active regulation path) ---------------
+  if (!skipRegulation && regulating_power) {
     // Check if we need to change the heating state
     if (!heating) {
       // Heater is currently off - only turn on if we need more than MIN_POWER_THRESHOLD + DEADBAND

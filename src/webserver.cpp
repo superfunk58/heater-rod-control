@@ -15,7 +15,6 @@
 #include "history.h"
 #include "energy.h"
 #include "temp_sensors.h"
-#include "pid_controller.h"
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <PsychicHttp.h>
@@ -44,7 +43,6 @@ extern unsigned long PUMP_CYCLE_DURATION_SEC;
 extern bool  PUMP_TEMP_COND_ENABLED;
 extern float PUMP_TEMP_HYST_C;
 extern unsigned long lastPowerDrawUpdate;
-extern String controllerMode;
 extern bool  VOL_ENABLED;
 extern int   VOL_WINDOW_MIN;
 extern int   VOL_THRESHOLD_W;
@@ -247,12 +245,6 @@ static esp_err_t handleConfig(PsychicRequest *req) {
     if (req->hasParam("pump_cycle_duration")) {
       doc["pump_cycle_duration"] = req->getParam("pump_cycle_duration")->value().toInt();
     }
-    if (req->hasParam("controller_mode")) {
-      doc["controller_mode"] = req->getParam("controller_mode")->value();
-    }
-    if (req->hasParam("online_adapt")) {
-      doc["online_adapt"] = req->getParam("online_adapt")->value();
-    }
     if (req->hasParam("pump_temp_cond")) {
       doc["pump_temp_cond"] = req->getParam("pump_temp_cond")->value();
     }
@@ -370,39 +362,6 @@ static esp_err_t handleConfig(PsychicRequest *req) {
       local.hasPumpCycleDuration = true;
       local.pumpCycleDurationSec = (unsigned long)sec;
     }
-  }
-  if (!doc["controller_mode"].isNull()) {
-    String v = doc["controller_mode"];
-    if (v == "classic" || v == "pid") {
-      local.hasControllerMode = true;
-      local.controllerMode = v;
-    }
-  }
-  if (!doc["pid_kp"].isNull()) {
-    float v = doc["pid_kp"];
-    if (v >= 0.5f && v <= 30.0f) {
-      local.hasPidKp = true;
-      local.pidKp = v;
-    }
-  }
-  if (!doc["pid_ki"].isNull()) {
-    float v = doc["pid_ki"];
-    if (v >= 0.05f && v <= 5.0f) {
-      local.hasPidKi = true;
-      local.pidKi = v;
-    }
-  }
-  if (!doc["pid_solar_ff"].isNull()) {
-    float v = doc["pid_solar_ff"];
-    if (v >= 0.0f && v <= 100.0f) {
-      local.hasPidSolarFf = true;
-      local.pidSolarFf = v;
-    }
-  }
-  if (!doc["online_adapt"].isNull()) {
-    String v = doc["online_adapt"];
-    local.hasOnlineAdapt = true;
-    local.onlineAdapt = (v == "1" || v == "true" || v == "on");
   }
   if (!doc["pump_temp_cond"].isNull()) {
     String v = doc["pump_temp_cond"];
@@ -636,56 +595,9 @@ static esp_err_t handleTempAssign(PsychicRequest *req) {
   return req->reply(200, "text/plain", "ok");
 }
 
-// ---- PID controller routes --------------------------------------------
-// GET /api/pid/status -> kp/ki/ff + autotune state + recent error samples
-static esp_err_t handlePidStatus(PsychicRequest *req) {
-  int16_t errs[60];
-  size_t  n = PidController::getRecentErrors(errs, 60);
-
-  JsonDocument doc;
-  doc["controllerMode"] = controllerMode;
-  doc["kp"] = PidController::kp();
-  doc["ki"] = PidController::ki();
-  doc["solar_ff"] = PidController::solarFf();
-  doc["integrator"] = (long)PidController::integrator();
-  doc["last_good_dac"] = PidController::lastGoodDac();
-  doc["online_adapt"] = PidController::onlineAdaptEnabled();
-  doc["last_adapt_epoch"] = (unsigned long)PidController::lastAdaptEpoch();
-  doc["autotune_state"] = PidController::autotuneStateStr();
-  doc["autotune_progress"] = PidController::autotuneProgressPercent();
-  doc["autotune_timestamp"] = (unsigned long)PidController::autotuneTimestamp();
-  JsonArray arr = doc["recent_errors"].to<JsonArray>();
-  for (size_t i = 0; i < n; i++) arr.add((int)errs[i]);
-  String out; serializeJson(doc, out);
-  return req->reply(200, "application/json", out.c_str());
-}
-
-// POST /api/pid/autotune -> Relay-Feedback Autotune starten
-static esp_err_t handlePidAutotuneStart(PsychicRequest *req) {
-  if (!PidController::startAutotune()) {
-    return req->reply(409, "text/plain", "autotune busy or preconditions failed");
-  }
-  webserver_ssePushPending = true;
-  return req->reply(200, "text/plain", "started");
-}
-
-// POST /api/pid/autotune/stop -> laufenden Autotune abbrechen
-static esp_err_t handlePidAutotuneStop(PsychicRequest *req) {
-  PidController::stopAutotune();
-  webserver_ssePushPending = true;
-  return req->reply(200, "text/plain", "stopped");
-}
-
 // POST /api/energy/reset -> alle Energie-Zähler löschen
 static esp_err_t handleEnergyReset(PsychicRequest *req) {
   Energy::resetAll();
-  webserver_ssePushPending = true;
-  return req->reply(200, "text/plain", "reset");
-}
-
-// POST /api/pid/reset -> Gains auf Defaults
-static esp_err_t handlePidReset(PsychicRequest *req) {
-  PidController::resetToDefaults();
   webserver_ssePushPending = true;
   return req->reply(200, "text/plain", "reset");
 }
@@ -720,10 +632,6 @@ void webserver_begin() {
   server.on("/api/temp/scan",   HTTP_GET,  handleTempScan);
   server.on("/api/temp/config", HTTP_GET,  handleTempConfigGet);
   server.on("/api/temp/assign", HTTP_POST, handleTempAssign);
-  server.on("/api/pid/status",        HTTP_GET,  handlePidStatus);
-  server.on("/api/pid/autotune",      HTTP_POST, handlePidAutotuneStart);
-  server.on("/api/pid/autotune/stop", HTTP_POST, handlePidAutotuneStop);
-  server.on("/api/pid/reset",         HTTP_POST, handlePidReset);
   server.on("/api/energy/reset",      HTTP_POST, handleEnergyReset);
   server.on("/api/reboots/reset",     HTTP_POST, handleRebootsReset);
 

@@ -44,13 +44,6 @@ struct PendingConfig {
   bool hasPumpCycleInterval = false;    unsigned long pumpCycleIntervalMin = 0;
   bool hasPumpCycleDuration = false;    unsigned long pumpCycleDurationSec = 0;
 
-  bool hasControllerMode = false;       String controllerMode;
-
-  bool hasPidKp = false;                float pidKp = 0.0f;
-  bool hasPidKi = false;                float pidKi = 0.0f;
-  bool hasPidSolarFf = false;           float pidSolarFf = 0.0f;
-  bool hasOnlineAdapt = false;          bool onlineAdapt = false;
-
   bool hasPumpTempCond = false;         bool pumpTempCond = false;
   bool hasPumpTempHyst = false;         float pumpTempHyst = 0.0f;
 
