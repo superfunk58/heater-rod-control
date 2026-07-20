@@ -339,7 +339,12 @@ void sendupdate(bool force)
   doc["volEnabled"]          = VOL_ENABLED;
   doc["volActive"]           = s_volatileActive;
 
-  String jsonString;
+  // Use a static String pre-reserved to 2048 bytes to avoid repeated heap
+  // alloc/free cycles (a 1.5 KB transient String every 2 s fragments the heap).
+  // The static instance is allocated once and reused; capacity never shrinks.
+  static String jsonString;
+  if (jsonString.capacity() < 2048) jsonString.reserve(2048);
+  jsonString = "";
   serializeJson(doc, jsonString);
 
   // Skip publish if payload identical to previous one (CRC32 check, unless heartbeat forces it)

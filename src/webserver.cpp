@@ -122,6 +122,8 @@ static inline String snapshotStatus() {
   if (!s_statusMutex) return s_statusPayload;
   String copy;
   if (xSemaphoreTake(s_statusMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    // Reserve before copy so String::operator= never triggers a reallocation.
+    copy.reserve(s_statusPayload.length());
     copy = s_statusPayload;
     xSemaphoreGive(s_statusMutex);
   }
