@@ -191,6 +191,18 @@ input:focus,select:focus{outline:none;border-color:#38bdf8}
 </div>
 </div>
 
+<div class="card"><div class="title">Firmware Update</div>
+<div class="hint" style="margin-bottom:14px;font-size:12px;color:#94a3b8;">
+HTTP-Upload einer kompilierten <b>.bin</b>-Firmware. Das Gerät startet nach erfolgreichem Upload automatisch neu.
+</div>
+<div class="fg">
+<label>Firmware Datei</label>
+<input type="file" id="fwFile" accept=".bin" style="background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;width:100%;font-family:inherit">
+<div class="hint">Nur Firmware-Binaries aus PlatformIO/Arduino verwenden.</div>
+</div>
+<div class="save-row"><button id="bFwUpload" type="button" class="bg">Firmware hochladen</button><div id="mFwUpload" class="msg"></div></div>
+</div>
+
 <div class="card"><div class="title">Netzwerk</div>
 <div class="hint" style="margin-bottom:14px;font-size:12px;color:#94a3b8;">
 Wähle zwischen WiFi und W5500 LAN. Bei LAN wird zuerst DHCP versucht; bei Fehlschlag fällt das Gerät auf WiFi zurück. Sobald LAN eine IP hat, wird WiFi ausgeschaltet. Änderungen benötigen Neustart.
@@ -646,6 +658,40 @@ $('bResetReboots').onclick = () => {
     .then(() => { $('vReboots').textContent = '0'; })
     .catch(() => {});
 };
+
+async function uploadFirmware() {
+  const input = $('fwFile');
+  const msg = $('mFwUpload');
+  const btn = $('bFwUpload');
+  const file = input.files && input.files[0];
+  if (!file) {
+    msg.className = 'msg err'; msg.textContent = 'Bitte eine .bin Datei auswählen';
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith('.bin')) {
+    msg.className = 'msg err'; msg.textContent = 'Nur .bin Dateien sind erlaubt';
+    return;
+  }
+  if (!confirm('Firmware "' + file.name + '" wirklich hochladen? Das Gerät startet danach neu.')) return;
+
+  const body = new FormData();
+  body.append('firmware', file, file.name);
+  btn.disabled = true;
+  msg.className = 'msg'; msg.textContent = 'Upload läuft...';
+  try {
+    const r = await fetch('/api/update/firmware', {method:'POST', body});
+    const text = await r.text();
+    if (!r.ok) throw new Error(text || ('HTTP ' + r.status));
+    msg.textContent = text || 'Upload erfolgreich, Neustart läuft...';
+    $('sConn').textContent = 'updating...';
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Fehler: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('bFwUpload').onclick = uploadFirmware;
 
 async function saveConfig() {
   const body = new URLSearchParams({

@@ -16,6 +16,7 @@
 #include <LittleFS.h>         // Web UI assets
 #include <time.h>             // NTP-based time for history timestamps
 #include <Preferences.h>      // NVS for persistent reboot counter
+#include <cstring>
 
 // Persistent reboot counter (NVS) + boot wall-clock epoch (set once NTP syncs).
 static uint32_t s_rebootCount = 0;
@@ -268,7 +269,7 @@ void sendupdate(bool force)
   doc["netMode"] = NetManager::activeIface();
   doc["ipAddress"] = NetManager::activeIP();
   // SSID/RSSI are only meaningful on WiFi; report empty/0 over LAN.
-  bool onWifi = (String(NetManager::activeIface()) == "wifi");
+  bool onWifi = strcmp(NetManager::activeIface(), "wifi") == 0;
   doc["wifiSSID"] = onWifi ? WiFi.SSID() : String("");
   doc["rssi"] = onWifi ? WiFi.RSSI() : 0;
   doc["lanConnected"] = NetManager::usingEthernet();
@@ -339,25 +340,31 @@ void sendupdate(bool force)
   doc["volEnabled"]          = VOL_ENABLED;
   doc["volActive"]           = s_volatileActive;
 
-  // Use a static String pre-reserved to 2048 bytes to avoid repeated heap
-  // alloc/free cycles (a 1.5 KB transient String every 2 s fragments the heap).
-  // The static instance is allocated once and reused; capacity never shrinks.
-  static String jsonString;
-  if (jsonString.capacity() < 2048) jsonString.reserve(2048);
-  jsonString = "";
-  serializeJson(doc, jsonString);
+  // Serialize into a fixed buffer to avoid frequent heap churn from transient
+  // String allocations on the 2s status path.
+  static char jsonBuffer[3072];
+  const size_t requiredJsonLen = measureJson(doc);
+  if (requiredJsonLen >= sizeof(jsonBuffer)) {
+    webLog("[JSON] status payload too large: %u", (unsigned)requiredJsonLen);
+    return;
+  }
+  const size_t jsonLen = serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
+  if (jsonLen == 0) {
+    webLog("[JSON] status payload empty");
+    return;
+  }
 
   // Skip publish if payload identical to previous one (CRC32 check, unless heartbeat forces it)
-  uint32_t jsonCRC = crc32(jsonString.c_str(), jsonString.length());
+  uint32_t jsonCRC = crc32(jsonBuffer, jsonLen);
   if (!force && jsonCRC == lastJsonCRC) { return; }
   lastJsonCRC = jsonCRC;
   lastTelemetryTime = millis();  // any publish counts as a heartbeat
-  webserver_broadcastStatus(jsonString);  // SSE push FIRST for minimal UI latency
+  webserver_broadcastStatus(jsonBuffer);  // SSE push FIRST for minimal UI latency
   // Rate-limit MQTT publish to avoid blocking the loop on every SSE update.
   // Publish failures are handled by the 30s MQTT reconnect interval; we do
   // NOT disconnect aggressively here to avoid TCP stack thrashing.
   if (MQTT_STATUS_ENABLED && millis() - lastMqttPublishTime >= MQTT_STATUS_INTERVAL_MS) {
-    mqttClient.publish(MQTT_TOPIC_STATUS, jsonString.c_str());
+    mqttClient.publish(MQTT_TOPIC_STATUS, jsonBuffer);
     lastMqttPublishTime = millis();
   }
 }

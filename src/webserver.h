@@ -6,7 +6,7 @@ void webserver_begin();
 
 // Broadcast the given JSON status to all connected SSE clients.
 // Called from sendupdate() in main.cpp whenever state changes.
-void webserver_broadcastStatus(const String &json);
+void webserver_broadcastStatus(const char *json);
 
 // Ultra-fast powerdraw SSE push. Sends a minimal JSON fragment so the
 // browser can update the Netzbezug display with zero delay.
