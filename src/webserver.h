@@ -6,7 +6,7 @@ void webserver_begin();
 
 // Broadcast the given JSON status to all connected SSE clients.
 // Called from sendupdate() in main.cpp whenever state changes.
-void webserver_broadcastStatus(const String &json);
+void webserver_broadcastStatus(const char *json);
 
 // Ultra-fast powerdraw SSE push. Sends a minimal JSON fragment so the
 // browser can update the Netzbezug display with zero delay.
@@ -43,13 +43,6 @@ struct PendingConfig {
   bool hasPumpMinRuntime = false;       unsigned long pumpMinRuntimeSec = 0;
   bool hasPumpCycleInterval = false;    unsigned long pumpCycleIntervalMin = 0;
   bool hasPumpCycleDuration = false;    unsigned long pumpCycleDurationSec = 0;
-
-  bool hasControllerMode = false;       String controllerMode;
-
-  bool hasPidKp = false;                float pidKp = 0.0f;
-  bool hasPidKi = false;                float pidKi = 0.0f;
-  bool hasPidSolarFf = false;           float pidSolarFf = 0.0f;
-  bool hasOnlineAdapt = false;          bool onlineAdapt = false;
 
   bool hasPumpTempCond = false;         bool pumpTempCond = false;
   bool hasPumpTempHyst = false;         float pumpTempHyst = 0.0f;

@@ -15,10 +15,12 @@
 #include "history.h"
 #include "energy.h"
 #include "temp_sensors.h"
-#include "pid_controller.h"
+#include <Update.h>
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <PsychicHttp.h>
+#include <cstring>
+#include <strings.h>
 
 // State owned by main.cpp
 extern volatile int powerdrawnumber;
@@ -44,7 +46,6 @@ extern unsigned long PUMP_CYCLE_DURATION_SEC;
 extern bool  PUMP_TEMP_COND_ENABLED;
 extern float PUMP_TEMP_HYST_C;
 extern unsigned long lastPowerDrawUpdate;
-extern String controllerMode;
 extern bool  VOL_ENABLED;
 extern int   VOL_WINDOW_MIN;
 extern int   VOL_THRESHOLD_W;
@@ -77,10 +78,13 @@ void sendupdate(bool force);
 static PsychicHttpServer  server;
 static PsychicEventSource events;
 static constexpr int MAX_SSE_CLIENTS = 4;  // hard cap: each idle client still owns a LWIP socket
-static String s_statusPayload;
+static constexpr size_t STATUS_PAYLOAD_CAP = 3072;
+static char   s_statusPayload[STATUS_PAYLOAD_CAP] = "{}";
 static SemaphoreHandle_t s_statusMutex = nullptr;
 static bool   rebootPending = false;
 static unsigned long rebootAt = 0;
+static bool   s_updateUploadOk = false;
+static char   s_updateError[96] = "";
 
 // Set by HTTP handlers when state changes; drained by loop() -> sendupdate().
 // This ensures events.send() is only ever called from the loop task,
@@ -120,14 +124,15 @@ void webserver_getAndClearPendingConfig(PendingConfig &out) {
 // own client list, declared after `events` further below).
 int webserver_getSseClientCount();
 
-static inline String snapshotStatus() {
-  if (!s_statusMutex) return s_statusPayload;
-  String copy;
-  if (xSemaphoreTake(s_statusMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-    copy = s_statusPayload;
-    xSemaphoreGive(s_statusMutex);
-  }
-  return copy;
+static bool hasBinSuffix(const char *filename) {
+  if (!filename) return false;
+  const char *dot = strrchr(filename, '.');
+  return dot && strcasecmp(dot, ".bin") == 0;
+}
+
+static void setUpdateError(const char *msg) {
+  if (!msg || !*msg) msg = "Update fehlgeschlagen";
+  snprintf(s_updateError, sizeof(s_updateError), "%s", msg);
 }
 
 // ---- Web log ring buffer (for browser console) --------------------------
@@ -172,11 +177,16 @@ static String paramOr(PsychicRequest *req, const char *name, const String &def) 
 
 // ---- Route handlers ----------------------------------------------------
 static esp_err_t handleStatus(PsychicRequest *req) {
-  String snap = snapshotStatus();
-  if (snap.length() == 0) {
-    return req->reply(200, "application/json", "{}");
+  if (!s_statusMutex) {
+    return req->reply(200, "application/json", s_statusPayload);
   }
-  return req->reply(200, "application/json", snap.c_str());
+  if (xSemaphoreTake(s_statusMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+    return req->reply(503, "application/json", "{\"error\":\"busy\"}");
+  }
+  char snapshot[STATUS_PAYLOAD_CAP];
+  memcpy(snapshot, s_statusPayload, sizeof(snapshot));
+  xSemaphoreGive(s_statusMutex);
+  return req->reply(200, "application/json", snapshot);
 }
 
 static esp_err_t handleCmd(PsychicRequest *req) {
@@ -212,9 +222,7 @@ static esp_err_t handleConfig(PsychicRequest *req) {
 
   // Try to parse JSON body if Content-Type is application/json
   if (req->contentType() == "application/json" && req->contentLength() > 0) {
-    // Get the body as a string
-    String body = req->body();
-    DeserializationError err = deserializeJson(doc, body);
+    DeserializationError err = deserializeJson(doc, req->body());
     if (err) {
       return req->reply(400, "text/plain", "Invalid JSON");
     }
@@ -246,12 +254,6 @@ static esp_err_t handleConfig(PsychicRequest *req) {
     }
     if (req->hasParam("pump_cycle_duration")) {
       doc["pump_cycle_duration"] = req->getParam("pump_cycle_duration")->value().toInt();
-    }
-    if (req->hasParam("controller_mode")) {
-      doc["controller_mode"] = req->getParam("controller_mode")->value();
-    }
-    if (req->hasParam("online_adapt")) {
-      doc["online_adapt"] = req->getParam("online_adapt")->value();
     }
     if (req->hasParam("pump_temp_cond")) {
       doc["pump_temp_cond"] = req->getParam("pump_temp_cond")->value();
@@ -370,39 +372,6 @@ static esp_err_t handleConfig(PsychicRequest *req) {
       local.hasPumpCycleDuration = true;
       local.pumpCycleDurationSec = (unsigned long)sec;
     }
-  }
-  if (!doc["controller_mode"].isNull()) {
-    String v = doc["controller_mode"];
-    if (v == "classic" || v == "pid") {
-      local.hasControllerMode = true;
-      local.controllerMode = v;
-    }
-  }
-  if (!doc["pid_kp"].isNull()) {
-    float v = doc["pid_kp"];
-    if (v >= 0.5f && v <= 30.0f) {
-      local.hasPidKp = true;
-      local.pidKp = v;
-    }
-  }
-  if (!doc["pid_ki"].isNull()) {
-    float v = doc["pid_ki"];
-    if (v >= 0.05f && v <= 5.0f) {
-      local.hasPidKi = true;
-      local.pidKi = v;
-    }
-  }
-  if (!doc["pid_solar_ff"].isNull()) {
-    float v = doc["pid_solar_ff"];
-    if (v >= 0.0f && v <= 100.0f) {
-      local.hasPidSolarFf = true;
-      local.pidSolarFf = v;
-    }
-  }
-  if (!doc["online_adapt"].isNull()) {
-    String v = doc["online_adapt"];
-    local.hasOnlineAdapt = true;
-    local.onlineAdapt = (v == "1" || v == "true" || v == "on");
   }
   if (!doc["pump_temp_cond"].isNull()) {
     String v = doc["pump_temp_cond"];
@@ -560,9 +529,9 @@ static esp_err_t handleParams(PsychicRequest *req) {
   doc["mqttStatusEnabled"] = MQTT_STATUS_ENABLED;
   doc["mqttStatusInterval"] = (int)(MQTT_STATUS_INTERVAL_MS / 1000);
 
-  String jsonString;
-  serializeJson(doc, jsonString);
-  return req->reply(200, "application/json", jsonString.c_str());
+  char json[768];
+  serializeJson(doc, json, sizeof(json));
+  return req->reply(200, "application/json", json);
 }
 
 static esp_err_t handleReboot(PsychicRequest *req) {
@@ -592,8 +561,9 @@ static esp_err_t handleTempScan(PsychicRequest *req) {
     if (f.current_c > -50.0f && f.current_c < 150.0f) obj["current_c"] = round(f.current_c * 10.0f) / 10.0f;
     else obj["current_c"] = nullptr;
   }
-  String out; serializeJson(doc, out);
-  return req->reply(200, "application/json", out.c_str());
+  char out[2048];
+  serializeJson(doc, out, sizeof(out));
+  return req->reply(200, "application/json", out);
 }
 
 // GET /api/temp/config -> aktuelle Rolle->ROM-Zuweisung
@@ -603,8 +573,9 @@ static esp_err_t handleTempConfigGet(PsychicRequest *req) {
   doc["inlet_rom"]   = TempSensors::inletRom()     ? TempSensors::romToHex(TempSensors::inletRom())     : "";
   doc["outlet_rom"]  = TempSensors::outletRom()    ? TempSensors::romToHex(TempSensors::outletRom())    : "";
   doc["hrod_rom"]    = TempSensors::heaterRodRom() ? TempSensors::romToHex(TempSensors::heaterRodRom()) : "";
-  String out; serializeJson(doc, out);
-  return req->reply(200, "application/json", out.c_str());
+  char out[384];
+  serializeJson(doc, out, sizeof(out));
+  return req->reply(200, "application/json", out);
 }
 
 // POST /api/temp/assign -> body: boiler_rom=...&inlet_rom=...
@@ -636,56 +607,9 @@ static esp_err_t handleTempAssign(PsychicRequest *req) {
   return req->reply(200, "text/plain", "ok");
 }
 
-// ---- PID controller routes --------------------------------------------
-// GET /api/pid/status -> kp/ki/ff + autotune state + recent error samples
-static esp_err_t handlePidStatus(PsychicRequest *req) {
-  int16_t errs[60];
-  size_t  n = PidController::getRecentErrors(errs, 60);
-
-  JsonDocument doc;
-  doc["controllerMode"] = controllerMode;
-  doc["kp"] = PidController::kp();
-  doc["ki"] = PidController::ki();
-  doc["solar_ff"] = PidController::solarFf();
-  doc["integrator"] = (long)PidController::integrator();
-  doc["last_good_dac"] = PidController::lastGoodDac();
-  doc["online_adapt"] = PidController::onlineAdaptEnabled();
-  doc["last_adapt_epoch"] = (unsigned long)PidController::lastAdaptEpoch();
-  doc["autotune_state"] = PidController::autotuneStateStr();
-  doc["autotune_progress"] = PidController::autotuneProgressPercent();
-  doc["autotune_timestamp"] = (unsigned long)PidController::autotuneTimestamp();
-  JsonArray arr = doc["recent_errors"].to<JsonArray>();
-  for (size_t i = 0; i < n; i++) arr.add((int)errs[i]);
-  String out; serializeJson(doc, out);
-  return req->reply(200, "application/json", out.c_str());
-}
-
-// POST /api/pid/autotune -> Relay-Feedback Autotune starten
-static esp_err_t handlePidAutotuneStart(PsychicRequest *req) {
-  if (!PidController::startAutotune()) {
-    return req->reply(409, "text/plain", "autotune busy or preconditions failed");
-  }
-  webserver_ssePushPending = true;
-  return req->reply(200, "text/plain", "started");
-}
-
-// POST /api/pid/autotune/stop -> laufenden Autotune abbrechen
-static esp_err_t handlePidAutotuneStop(PsychicRequest *req) {
-  PidController::stopAutotune();
-  webserver_ssePushPending = true;
-  return req->reply(200, "text/plain", "stopped");
-}
-
 // POST /api/energy/reset -> alle Energie-Zähler löschen
 static esp_err_t handleEnergyReset(PsychicRequest *req) {
   Energy::resetAll();
-  webserver_ssePushPending = true;
-  return req->reply(200, "text/plain", "reset");
-}
-
-// POST /api/pid/reset -> Gains auf Defaults
-static esp_err_t handlePidReset(PsychicRequest *req) {
-  PidController::resetToDefaults();
   webserver_ssePushPending = true;
   return req->reply(200, "text/plain", "reset");
 }
@@ -695,6 +619,58 @@ static esp_err_t handleRebootsReset(PsychicRequest *req) {
   resetRebootCounter();
   webserver_ssePushPending = true;
   return req->reply(200, "text/plain", "reset");
+}
+
+static esp_err_t handleFirmwareUploadChunk(PsychicRequest *req, const String &filename, uint64_t index, uint8_t *data, size_t len, bool last) {
+  (void)req;
+  if (index == 0) {
+    s_updateUploadOk = false;
+    s_updateError[0] = '\0';
+    if (!hasBinSuffix(filename.c_str())) {
+      setUpdateError("Nur .bin Firmware-Dateien sind erlaubt");
+      return ESP_FAIL;
+    }
+    webserver_pauseSSE = true;
+    Update.clearError();
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+      setUpdateError(Update.errorString());
+      webserver_pauseSSE = false;
+      return ESP_FAIL;
+    }
+    webLog("[OTA] HTTP upload gestartet: %s", filename.c_str());
+  }
+
+  if (len > 0 && Update.write(data, len) != len) {
+    setUpdateError(Update.errorString());
+    Update.abort();
+    webserver_pauseSSE = false;
+    return ESP_FAIL;
+  }
+
+  if (last) {
+    if (!Update.end(true)) {
+      setUpdateError(Update.errorString());
+      Update.abort();
+      webserver_pauseSSE = false;
+      return ESP_FAIL;
+    }
+    s_updateUploadOk = true;
+    History::saveNow();
+    rebootPending = true;
+    rebootAt = millis() + 1500;
+    webLog("[OTA] HTTP upload abgeschlossen: %s", filename.c_str());
+  }
+
+  return ESP_OK;
+}
+
+static esp_err_t handleFirmwareUploadDone(PsychicRequest *req) {
+  if (s_updateUploadOk) {
+    return req->reply(200, "text/plain", "ok - firmware uploaded, rebooting");
+  }
+  webserver_pauseSSE = false;
+  const char *msg = s_updateError[0] ? s_updateError : "Upload fehlgeschlagen";
+  return req->reply(500, "text/plain", msg);
 }
 
 // ---- Public API --------------------------------------------------------
@@ -707,6 +683,7 @@ void webserver_begin() {
   if (!s_statusMutex) s_statusMutex = xSemaphoreCreateMutex();
   server.config.max_uri_handlers = 20;
   server.config.max_open_sockets   = 7;
+  server.maxUploadSize = 3 * 1024 * 1024;
   server.listen(80);
 
   // API routes registered FIRST so the static-file fallback doesn't
@@ -720,12 +697,13 @@ void webserver_begin() {
   server.on("/api/temp/scan",   HTTP_GET,  handleTempScan);
   server.on("/api/temp/config", HTTP_GET,  handleTempConfigGet);
   server.on("/api/temp/assign", HTTP_POST, handleTempAssign);
-  server.on("/api/pid/status",        HTTP_GET,  handlePidStatus);
-  server.on("/api/pid/autotune",      HTTP_POST, handlePidAutotuneStart);
-  server.on("/api/pid/autotune/stop", HTTP_POST, handlePidAutotuneStop);
-  server.on("/api/pid/reset",         HTTP_POST, handlePidReset);
   server.on("/api/energy/reset",      HTTP_POST, handleEnergyReset);
   server.on("/api/reboots/reset",     HTTP_POST, handleRebootsReset);
+
+  PsychicUploadHandler *firmwareUploadHandler = new PsychicUploadHandler();
+  firmwareUploadHandler->onUpload(handleFirmwareUploadChunk);
+  firmwareUploadHandler->onRequest(handleFirmwareUploadDone);
+  server.on("/api/update/firmware", HTTP_POST, firmwareUploadHandler);
 
   History::registerRoutes(server);
 
@@ -759,18 +737,23 @@ void webserver_begin() {
   // Server + httpd task are up.
 }
 
-void webserver_broadcastStatus(const String &json) {
+void webserver_broadcastStatus(const char *json) {
+  if (!json) json = "{}";
   if (s_statusMutex) {
     if (xSemaphoreTake(s_statusMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-      s_statusPayload = json;
+      size_t len = strnlen(json, STATUS_PAYLOAD_CAP - 1);
+      memcpy(s_statusPayload, json, len);
+      s_statusPayload[len] = '\0';
       xSemaphoreGive(s_statusMutex);
     }
     // If take times out, skip this update rather than writing unsafely.
   } else {
-    s_statusPayload = json;  // only before webserver_begin()
+    size_t len = strnlen(json, STATUS_PAYLOAD_CAP - 1);
+    memcpy(s_statusPayload, json, len);
+    s_statusPayload[len] = '\0';
   }
   if (!webserver_pauseSSE) {
-    events.send(json.c_str(), "status", millis());
+    events.send(json, "status", millis());
   }
 }
 
@@ -800,10 +783,9 @@ int webserver_getSseClientCount() {
 }
 
 void webserver_loop() {
-  // Automatic reboot disabled; only manual reboot via /api/reboot is allowed.
-  // if (rebootPending && millis() >= rebootAt) {
-  //   ESP.restart();
-  // }
+  if (rebootPending && millis() >= rebootAt) {
+    ESP.restart();
+  }
 
   // Diagnostic heartbeat: track heap + SSE client count over time so we can
   // correlate a future "connection LED red" / unreachable-webserver report

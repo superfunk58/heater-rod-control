@@ -12,11 +12,11 @@
 #include "history.h"          // Power history ring buffer (dedicated NVS partition)
 #include "energy.h"           // Heizstab Energy integrator (Wh, monthly chunks)
 #include "temp_sensors.h"     // DS18B20 OneWire temp sensors (Boiler + Heizstab-Zulauf)
-#include "pid_controller.h"   // Reiner PID auf DAC mit Online-Adaption + Relay-Autotune
 #include "net_manager.h"      // WiFi/W5500 LAN network management
 #include <LittleFS.h>         // Web UI assets
 #include <time.h>             // NTP-based time for history timestamps
 #include <Preferences.h>      // NVS for persistent reboot counter
+#include <cstring>
 
 // Persistent reboot counter (NVS) + boot wall-clock epoch (set once NTP syncs).
 static uint32_t s_rebootCount = 0;
@@ -85,8 +85,6 @@ volatile bool regulating_power = true;
 bool HISTORY_AVERAGING = true;       // History: zeit-gewichtetes Mitteln (true) vs. Momentanwert-Snapshot (false)
 bool heating = false;
 int DACoutput;
-// Reglerwahl: "classic" = Tabelle + Watt-PI (default, kein Bruch), "pid" = reiner PID auf DAC.
-String controllerMode = "classic";
 
 // Pin-Definitionen (ESP32 DevKit v1)
 #define STATUS_LED 2          // GPIO2 = on-board blue LED. ESP32 LED is active-HIGH (HIGH = on).
@@ -271,7 +269,7 @@ void sendupdate(bool force)
   doc["netMode"] = NetManager::activeIface();
   doc["ipAddress"] = NetManager::activeIP();
   // SSID/RSSI are only meaningful on WiFi; report empty/0 over LAN.
-  bool onWifi = (String(NetManager::activeIface()) == "wifi");
+  bool onWifi = strcmp(NetManager::activeIface(), "wifi") == 0;
   doc["wifiSSID"] = onWifi ? WiFi.SSID() : String("");
   doc["rssi"] = onWifi ? WiFi.RSSI() : 0;
   doc["lanConnected"] = NetManager::usingEthernet();
@@ -342,23 +340,31 @@ void sendupdate(bool force)
   doc["volEnabled"]          = VOL_ENABLED;
   doc["volActive"]           = s_volatileActive;
 
-  // PID-Regler Status (nur Modus, keine internen Reglerdaten)
-  doc["controllerMode"]  = controllerMode;
-
-  String jsonString;
-  serializeJson(doc, jsonString);
+  // Serialize into a fixed buffer to avoid frequent heap churn from transient
+  // String allocations on the 2s status path.
+  static char jsonBuffer[3072];
+  const size_t requiredJsonLen = measureJson(doc);
+  if (requiredJsonLen >= sizeof(jsonBuffer)) {
+    webLog("[JSON] status payload too large: %u", (unsigned)requiredJsonLen);
+    return;
+  }
+  const size_t jsonLen = serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
+  if (jsonLen == 0) {
+    webLog("[JSON] status payload empty");
+    return;
+  }
 
   // Skip publish if payload identical to previous one (CRC32 check, unless heartbeat forces it)
-  uint32_t jsonCRC = crc32(jsonString.c_str(), jsonString.length());
+  uint32_t jsonCRC = crc32(jsonBuffer, jsonLen);
   if (!force && jsonCRC == lastJsonCRC) { return; }
   lastJsonCRC = jsonCRC;
   lastTelemetryTime = millis();  // any publish counts as a heartbeat
-  webserver_broadcastStatus(jsonString);  // SSE push FIRST for minimal UI latency
+  webserver_broadcastStatus(jsonBuffer);  // SSE push FIRST for minimal UI latency
   // Rate-limit MQTT publish to avoid blocking the loop on every SSE update.
   // Publish failures are handled by the 30s MQTT reconnect interval; we do
   // NOT disconnect aggressively here to avoid TCP stack thrashing.
   if (MQTT_STATUS_ENABLED && millis() - lastMqttPublishTime >= MQTT_STATUS_INTERVAL_MS) {
-    mqttClient.publish(MQTT_TOPIC_STATUS, jsonString.c_str());
+    mqttClient.publish(MQTT_TOPIC_STATUS, jsonBuffer);
     lastMqttPublishTime = millis();
   }
 }
@@ -729,9 +735,6 @@ void setup() {
   History::begin();
   Energy::begin();
 
-  // PID-Regler-State aus NVS laden (auch wenn nicht aktiv ist es harmlos).
-  PidController::begin();
-
   // NTP time for history timestamps. Europe/Berlin with DST handling.
   configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.nist.gov");
 
@@ -764,13 +767,6 @@ static void applyPendingConfig() {
   if (p.hasPumpMinRuntime) PUMP_MIN_RUNTIME_MS = p.pumpMinRuntimeSec * 1000UL;
   if (p.hasPumpCycleInterval) PUMP_CYCLE_INTERVAL_MIN = p.pumpCycleIntervalMin;
   if (p.hasPumpCycleDuration) PUMP_CYCLE_DURATION_SEC = p.pumpCycleDurationSec;
-
-  if (p.hasControllerMode) controllerMode = p.controllerMode;
-
-  if (p.hasPidKp) PidController::setKp(p.pidKp);
-  if (p.hasPidKi) PidController::setKi(p.pidKi);
-  if (p.hasPidSolarFf) PidController::setSolarFf(p.pidSolarFf);
-  if (p.hasOnlineAdapt) PidController::setOnlineAdaptEnabled(p.onlineAdapt);
 
   if (p.hasPumpTempCond) PUMP_TEMP_COND_ENABLED = p.pumpTempCond;
   if (p.hasPumpTempHyst) PUMP_TEMP_HYST_C = p.pumpTempHyst;
@@ -982,15 +978,8 @@ void loop() {
     sendupdate();
   }
 
-  // Always feed the PID error stat buffer so the UI mini-chart has data
-  // (also in classic mode). recordSample() is rate-limited internally to 1Hz.
-  PidController::recordSample(powerToConsume, currentTime);
-
-  // -------- Reglerwahl: PID übernimmt die komplette Regelung -------------
-  if (controllerMode == "pid") {
-    PidController::regulate(currentTime);
-    PidController::tickAdapt(currentTime);
-  } else if (!skipRegulation && regulating_power) {
+  // -------- Classic regulator (only active regulation path) ---------------
+  if (!skipRegulation && regulating_power) {
     // Check if we need to change the heating state
     if (!heating) {
       // Heater is currently off - only turn on if we need more than MIN_POWER_THRESHOLD + DEADBAND

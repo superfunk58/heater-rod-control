@@ -64,14 +64,11 @@ static uint64_t romFromBytes(const uint8_t in[8]) {
 
 String romToHex(uint64_t rom) {
   uint8_t b[8]; romToBytes(rom, b);
-  String s;
-  for (int i = 0; i < 8; i++) {
-    if (b[i] < 0x10) s += '0';
-    s += String(b[i], HEX);
-    if (i < 7) s += '-';
-  }
-  s.toUpperCase();
-  return s;
+  // Use snprintf into a fixed buffer - avoids repeated String heap reallocations.
+  char buf[24];  // "AA-BB-CC-DD-EE-FF-GG-HH\0" = 23 chars + NUL
+  snprintf(buf, sizeof(buf), "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X",
+           b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
+  return String(buf);
 }
 
 uint64_t romFromHex(const String &hex) {

@@ -167,33 +167,6 @@ input:focus,select:focus{outline:none;border-color:#38bdf8}
 </div>
 <div class="hint" style="margin-top:10px">Wenn die Regelung aktiv ist und Solar&uuml;berschuss vorhanden ist, wird die Pumpe automatisch eingeschaltet. Manueller Pumpenbetrieb &uuml;berschreibt die Automatik. <span id="pumpStatus" style="color:#38bdf8"></span></div>
 </div>
-<div class="card"><div class="title">PID-Regler</div>
-<div class="grid" style="grid-template-columns:1fr 1fr">
-<div class="m"><div class="ml">Modus</div><div id="vPidMode" class="mv">&mdash;</div></div>
-<div class="m"><div class="ml">Kp</div><input id="vPidKp" class="mi" type="number" step="0.1" min="0.5" max="30" placeholder="—"></div>
-<div class="m"><div class="ml">Ki</div><input id="vPidKi" class="mi" type="number" step="0.01" min="0.05" max="5" placeholder="—"></div>
-<div class="m"><div class="ml">Solar FF</div><input id="vPidFf" class="mi" type="number" step="1" min="0" max="100" placeholder="—"></div>
-<div class="m"><div class="ml">Integrator</div><div id="vPidInt" class="mv">&mdash;</div></div>
-<div class="m"><div class="ml">Autotune</div><div id="vPidAt" class="mv">&mdash;</div></div>
-</div>
-<div class="hint" style="margin-top:8px;font-size:12px;color:#94a3b8;">
-<strong>Kp</strong>: Proportional-Verstärkung (Reaktion auf Fehler). <strong>Ki</strong>: Integral-Verstärkung (ausreißt Fehler über Zeit). <strong>Solar FF</strong>: Feedforward für Solar-Leistung (DAC-counts pro Watt Solar, schneller Reaktion auf Schwankungen).
-</div>
-<div class="row" style="margin-top:10px">
-<button id="bPidMode" type="button" class="blg">Modus wechseln</button>
-<button id="bPidAtStart" type="button" class="blg">Autotune starten</button>
-<button id="bPidAtStop" type="button" class="bd" style="display:none">Autotune stoppen</button>
-<button id="bPidReset" type="button" class="bd">Reset Defaults</button>
-</div>
-<div class="row" style="margin-top:8px">
-<label style="font-size:12px"><input type="checkbox" id="cPidOnlineAdapt"> Online-Adaption aktiv</label>
-</div>
-<div class="hint" style="margin-top:4px;font-size:11px;color:#64748b;">Hinweis: Die Online-Adaption ist nur im Modus "PID" aktiv. Sie passt Kp, Ki und Solar FF automatisch an, um Oszillationen zu vermeiden.</div>
-<div class="hint" style="margin-top:16px;margin-bottom:4px;font-size:12px;color:#94a3b8;font-weight:bold;">
-Zu Verbrauchen / Regelabweichung (letzte 60 Sekunden)
-</div>
-<canvas id="pidErrorChart" width="400" height="150" style="width:100%;height:150px;background:#1e293b;border-radius:4px"></canvas>
-</div>
 </div>
 
 
@@ -216,6 +189,18 @@ Zu Verbrauchen / Regelabweichung (letzte 60 Sekunden)
 <div class="row" style="margin-top:14px">
 <button id="bReboot" type="button" class="bd">Neustart</button>
 </div>
+</div>
+
+<div class="card"><div class="title">Firmware Update</div>
+<div class="hint" style="margin-bottom:14px;font-size:12px;color:#94a3b8;">
+HTTP-Upload einer kompilierten <b>.bin</b>-Firmware. Das Gerät startet nach erfolgreichem Upload automatisch neu.
+</div>
+<div class="fg">
+<label>Firmware Datei</label>
+<input type="file" id="fwFile" accept=".bin" style="background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:8px 12px;border-radius:6px;font-size:14px;width:100%;font-family:inherit">
+<div class="hint">Nur Firmware-Binaries aus PlatformIO/Arduino verwenden.</div>
+</div>
+<div class="save-row"><button id="bFwUpload" type="button" class="bg">Firmware hochladen</button><div id="mFwUpload" class="msg"></div></div>
 </div>
 
 <div class="card"><div class="title">Netzwerk</div>
@@ -353,8 +338,6 @@ Relais schaltet für gewählte Dauer ein, dann automatisch aus. Manuell abbrechb
 <script>
 const $ = id => document.getElementById(id);
 let state = {};
-let pidErrorBuffer = [];  // Client-side error buffer for chart
-const MAX_ERROR_SAMPLES = 40;
 
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
@@ -368,56 +351,6 @@ function setLed(id, on, warn) {
   const e = $(id);
   e.classList.toggle('on', !!on && !warn);
   e.classList.toggle('w', !!warn);
-}
-
-function drawPidErrorChart() {
-  const canvas = $('pidErrorChart');
-  if (!canvas) return;
-  // Sync canvas drawing buffer to displayed size for crisp rendering
-  const dispW = canvas.clientWidth || 400;
-  const dispH = canvas.clientHeight || 80;
-  if (canvas.width !== dispW) canvas.width = dispW;
-  if (canvas.height !== dispH) canvas.height = dispH;
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width;
-  const h = canvas.height;
-
-  // Clear
-  ctx.fillStyle = '#1e293b';
-  ctx.fillRect(0, 0, w, h);
-
-  // Draw zero line (always, even if buffer empty)
-  ctx.strokeStyle = '#475569';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(0, h/2);
-  ctx.lineTo(w, h/2);
-  ctx.stroke();
-
-  // Label
-  ctx.fillStyle = '#64748b';
-  ctx.font = '10px sans-serif';
-  ctx.fillText('±200W', 4, 12);
-  if (pidErrorBuffer.length === 0) {
-    ctx.fillText('warte auf Daten...', w/2 - 40, h/2 + 16);
-    return;
-  }
-  if (pidErrorBuffer.length < 2) return;
-
-  // Draw error line
-  ctx.strokeStyle = '#38bdf8';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  const step = w / (MAX_ERROR_SAMPLES - 1);
-  const scale = h / 400;  // +/-200W range
-
-  for (let i = 0; i < pidErrorBuffer.length; i++) {
-    const x = i * step;
-    const y = h/2 - (pidErrorBuffer[i] * scale);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
 }
 
 function render(s) {
@@ -468,29 +401,6 @@ function render(s) {
   if (s.onewirePin !== undefined && activeElement !== $('cOwPin')) $('cOwPin').value = s.onewirePin;
   if (s.mqttStatusEnabled !== undefined && activeElement !== $('cMqttEn')) $('cMqttEn').checked = s.mqttStatusEnabled;
   if (s.mqttStatusInterval !== undefined && activeElement !== $('cMqttInt')) $('cMqttInt').value = s.mqttStatusInterval;
-  // PID-Status
-  if (s.controllerMode !== undefined) {
-    $('vPidMode').textContent = s.controllerMode === 'pid' ? 'PID' : 'Classic';
-  }
-  if (s.pidKp !== undefined && document.activeElement !== $('vPidKp')) $('vPidKp').value = s.pidKp.toFixed(2);
-  if (s.pidKi !== undefined && document.activeElement !== $('vPidKi')) $('vPidKi').value = s.pidKi.toFixed(3);
-  if (s.pidSolarFF !== undefined && document.activeElement !== $('vPidFf')) $('vPidFf').value = s.pidSolarFF.toFixed(1);
-  if (s.pidIntegrator !== undefined) $('vPidInt').textContent = s.pidIntegrator.toFixed(0);
-  if (s.autotuneState !== undefined) {
-    $('vPidAt').textContent = s.autotuneState;
-    const atRunning = s.autotuneState !== 'idle' && s.autotuneState !== 'done' && s.autotuneState !== 'failed';
-    $('bPidAtStart').style.display = atRunning ? 'none' : '';
-    $('bPidAtStop').style.display = atRunning ? '' : 'none';
-  }
-  if (s.pidOnlineAdapt !== undefined) {
-    $('cPidOnlineAdapt').checked = s.pidOnlineAdapt;
-  }
-
-  // Update error buffer for chart from SSE (server provides recent_errors array)
-  if (s.recent_errors && Array.isArray(s.recent_errors)) {
-    pidErrorBuffer = s.recent_errors.slice(-MAX_ERROR_SAMPLES);
-    drawPidErrorChart();
-  }
 
   // MQTT-Status in Headline
   if (s.mqttConnected !== undefined) {
@@ -722,33 +632,6 @@ $('bDrain3s').onclick = () => postCmd('drain_on', '3');
 $('bDrain10s').onclick = () => postCmd('drain_on', '10');
 $('bDrainOff').onclick = () => postCmd('drain_off');
 
-// PID-Buttons
-$('bPidMode').onclick = () => {
-  const newMode = state.controllerMode === 'pid' ? 'classic' : 'pid';
-  fetch('/api/config', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({controller_mode: newMode})
-  }).catch(console.error);
-};
-$('bPidAtStart').onclick = () => {
-  fetch('/api/pid/autotune', {method: 'POST'}).catch(console.error);
-};
-$('bPidAtStop').onclick = () => {
-  fetch('/api/pid/autotune', {method: 'DELETE'}).catch(console.error);
-};
-$('bPidReset').onclick = () => {
-  if (!confirm('PID-Parameter auf Default zurücksetzen?')) return;
-  fetch('/api/pid/reset', {method: 'POST'}).catch(console.error);
-};
-$('cPidOnlineAdapt').onchange = (e) => {
-  fetch('/api/config', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({online_adapt: e.target.checked})
-  }).catch(console.error);
-};
-
 // MQTT status switch saves immediately (standalone toggle, not part of the main form)
 $('cMqttEn').onchange = (e) => {
   fetch('/api/config', {
@@ -756,30 +639,6 @@ $('cMqttEn').onchange = (e) => {
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     body: new URLSearchParams({ mqtt_status_enabled: e.target.checked ? '1' : '0' })
   }).catch(console.error);
-};
-
-// PID parameter direct editing
-const sendPidParam = (param, value) => {
-  fetch('/api/config', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({[param]: value})
-  }).catch(console.error);
-};
-
-$('vPidKp').onchange = (e) => {
-  const v = parseFloat(e.target.value);
-  if (!isNaN(v) && v >= 0.5 && v <= 30) sendPidParam('pid_kp', v);
-};
-
-$('vPidKi').onchange = (e) => {
-  const v = parseFloat(e.target.value);
-  if (!isNaN(v) && v >= 0.05 && v <= 5) sendPidParam('pid_ki', v);
-};
-
-$('vPidFf').onchange = (e) => {
-  const v = parseFloat(e.target.value);
-  if (!isNaN(v) && v >= 0 && v <= 100) sendPidParam('pid_solar_ff', v);
 };
 
 $('bEnReset').onclick = () => {
@@ -799,6 +658,40 @@ $('bResetReboots').onclick = () => {
     .then(() => { $('vReboots').textContent = '0'; })
     .catch(() => {});
 };
+
+async function uploadFirmware() {
+  const input = $('fwFile');
+  const msg = $('mFwUpload');
+  const btn = $('bFwUpload');
+  const file = input.files && input.files[0];
+  if (!file) {
+    msg.className = 'msg err'; msg.textContent = 'Bitte eine .bin Datei auswählen';
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith('.bin')) {
+    msg.className = 'msg err'; msg.textContent = 'Nur .bin Dateien sind erlaubt';
+    return;
+  }
+  if (!confirm('Firmware "' + file.name + '" wirklich hochladen? Das Gerät startet danach neu.')) return;
+
+  const body = new FormData();
+  body.append('firmware', file, file.name);
+  btn.disabled = true;
+  msg.className = 'msg'; msg.textContent = 'Upload läuft...';
+  try {
+    const r = await fetch('/api/update/firmware', {method:'POST', body});
+    const text = await r.text();
+    if (!r.ok) throw new Error(text || ('HTTP ' + r.status));
+    msg.textContent = text || 'Upload erfolgreich, Neustart läuft...';
+    $('sConn').textContent = 'updating...';
+  } catch (e) {
+    msg.className = 'msg err'; msg.textContent = 'Fehler: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('bFwUpload').onclick = uploadFirmware;
 
 async function saveConfig() {
   const body = new URLSearchParams({
