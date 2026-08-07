@@ -7,16 +7,18 @@
 #include "webserver.h"   // webLog()
 
 // Network configuration globals (owned by main.cpp, persisted by ConfigStore).
-extern String NET_MODE;   // "wifi" | "lan"
-extern bool   LAN_DHCP;
-extern String LAN_IP;
-extern String LAN_GW;
-extern String LAN_MASK;
-extern String LAN_DNS;
+// Fixed-size char arrays: no heap, no fragmentation.
+extern char NET_MODE[8];   // "wifi" | "lan"
+extern bool LAN_DHCP;
+extern char LAN_IP[16];
+extern char LAN_GW[16];
+extern char LAN_MASK[16];
+extern char LAN_DNS[16];
 
 namespace NetManager {
 
-static String        s_hostname     = "Heizstabsteuerung";
+static char          s_hostname[33] = "Heizstabsteuerung";
+static char          s_ssid[33]     = "";   // cached WiFi SSID (set on GOT_IP)
 static bool          s_lanMode      = false;   // NET_MODE == "lan"
 
 // Explicit network state machine. Only one interface is ever intended to be
@@ -45,11 +47,17 @@ static unsigned long s_lanDeadline = 0;        // millis() when LAN first-attemp
 static unsigned long s_wifiOutageStart   = 0;    // start of current WiFi outage
 static unsigned long s_lastWifiReconnect = 0;   // rate-limit reconnect attempts
 
+// Format an IPAddress as "a.b.c.d" without heap Strings (IPAddress::toString()
+// allocates; used on the 2 s status path and in network event handlers).
+static void fmtIP(char *buf, size_t len, const IPAddress &ip) {
+  snprintf(buf, len, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+}
+
 // ---- mDNS (re)start ------------------------------------------------------
 static void restartMDNS() {
   MDNS.end();
-  if (MDNS.begin(s_hostname.c_str())) {
-    MDNS.setInstanceName(s_hostname.c_str());
+  if (MDNS.begin(s_hostname)) {
+    MDNS.setInstanceName(s_hostname);
     MDNS.addService("http", "tcp", 80);
   }
 }
@@ -58,7 +66,7 @@ static void restartMDNS() {
 static void startWifi() {
   if (WiFi.getMode() != WIFI_OFF) return; // already active
   WiFi.mode(WIFI_STA);
-  WiFi.setHostname(s_hostname.c_str());
+  WiFi.setHostname(s_hostname);
   WiFi.setSleep(false);             // disable power saving for OTA stability
   WiFi.setAutoReconnect(true);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
@@ -89,14 +97,14 @@ static void startEthernet() {
     webLog("[Net] W5500 ETH.begin() FAILED (no chip / wiring?)");
     return;
   }
-  ETH.setHostname(s_hostname.c_str());
+  ETH.setHostname(s_hostname);
   if (!LAN_DHCP) {
     IPAddress ip, gw, mask, dns;
     bool ok = ip.fromString(LAN_IP) && gw.fromString(LAN_GW) &&
               mask.fromString(LAN_MASK) && dns.fromString(LAN_DNS);
     if (ok && ETH.config(ip, gw, mask, dns)) {
-      Serial.printf("[Net] W5500 static IP %s gw %s\n", LAN_IP.c_str(), LAN_GW.c_str());
-      webLog("[Net] W5500 static IP %s gw %s", LAN_IP.c_str(), LAN_GW.c_str());
+      Serial.printf("[Net] W5500 static IP %s gw %s\n", LAN_IP, LAN_GW);
+      webLog("[Net] W5500 static IP %s gw %s", LAN_IP, LAN_GW);
     } else {
       Serial.println("[Net] W5500 static IP invalid -> using DHCP");
       webLog("[Net] W5500 static IP invalid -> using DHCP");
@@ -113,7 +121,7 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
   switch (event) {
     case ARDUINO_EVENT_ETH_START:
       Serial.println("[Net] event: ETH_START");
-      ETH.setHostname(s_hostname.c_str());
+      ETH.setHostname(s_hostname);
       break;
     case ARDUINO_EVENT_ETH_CONNECTED:
       s_ethLinkUp = true;
@@ -124,8 +132,11 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
     case ARDUINO_EVENT_ETH_GOT_IP6:
       s_ethHasIP = true;
       s_ethLinkUp = true;
-      Serial.printf("[Net] W5500 GOT IP %s\n", ETH.localIP().toString().c_str());
-      webLog("[Net] W5500 GOT IP %s", ETH.localIP().toString().c_str());
+      {
+        char ip[16]; fmtIP(ip, sizeof(ip), ETH.localIP());
+        Serial.printf("[Net] W5500 GOT IP %s\n", ip);
+        webLog("[Net] W5500 GOT IP %s", ip);
+      }
       restartMDNS();
       s_lanDownSince = 0;   // LAN is back up -> cancel any pending fallback timer
       break;
@@ -148,14 +159,23 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
       break;
     case ARDUINO_EVENT_WIFI_STA_START:
       Serial.println("[Net] event: WIFI_STA_START");
-      WiFi.setHostname(s_hostname.c_str());
+      WiFi.setHostname(s_hostname);
       break;
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-      Serial.printf("[Net] WiFi GOT IP %s\n", WiFi.localIP().toString().c_str());
-      webLog("[Net] WiFi GOT IP %s", WiFi.localIP().toString().c_str());
+      {
+        char ip[16]; fmtIP(ip, sizeof(ip), WiFi.localIP());
+        Serial.printf("[Net] WiFi GOT IP %s\n", ip);
+        webLog("[Net] WiFi GOT IP %s", ip);
+      }
+      // Cache the SSID so sendupdate() never calls WiFi.SSID() (heap String).
+      {
+        String s = WiFi.SSID();
+        strlcpy(s_ssid, s.c_str(), sizeof(s_ssid));
+      }
       restartMDNS();
       break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      s_ssid[0] = '\0';
       Serial.printf("[Net] WiFi disconnected (reason=%d)\n", info.wifi_sta_disconnected.reason);
       break;
     case ARDUINO_EVENT_WIFI_STA_LOST_IP:
@@ -168,12 +188,12 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
 
 // ---- Public API ----------------------------------------------------------
 void begin(const char *hostname) {
-  if (hostname && *hostname) s_hostname = hostname;
-  s_lanMode = (NET_MODE == "lan");
+  if (hostname && *hostname) strlcpy(s_hostname, hostname, sizeof(s_hostname));
+  s_lanMode = (strcmp(NET_MODE, "lan") == 0);
 
   Network.onEvent(onNetEvent);
 
-  Serial.printf("[Net] begin() NET_MODE=%s LAN_DHCP=%s\n", NET_MODE.c_str(), LAN_DHCP ? "true" : "false");
+  Serial.printf("[Net] begin() NET_MODE=%s LAN_DHCP=%s\n", NET_MODE, LAN_DHCP ? "true" : "false");
 
   if (s_lanMode) {
     // LAN-first boot: start Ethernet, wait for link/IP, then start WiFi fallback if needed.
@@ -282,12 +302,20 @@ const char *activeIface() {
   }
 }
 
-String activeIP() {
-  if (s_state == NetState::LAN && s_ethHasIP) return ETH.localIP().toString();
-  if ((s_state == NetState::WIFI || s_state == NetState::LAN_WIFI_FALLBACK) &&
-      WiFi.status() == WL_CONNECTED) return WiFi.localIP().toString();
-  return "0.0.0.0";
+const char *activeIP() {
+  static char buf[16];
+  if (s_state == NetState::LAN && s_ethHasIP) {
+    fmtIP(buf, sizeof(buf), ETH.localIP());
+  } else if ((s_state == NetState::WIFI || s_state == NetState::LAN_WIFI_FALLBACK) &&
+             WiFi.status() == WL_CONNECTED) {
+    fmtIP(buf, sizeof(buf), WiFi.localIP());
+  } else {
+    strcpy(buf, "0.0.0.0");
+  }
+  return buf;
 }
+
+const char *ssid() { return s_ssid; }
 
 void fillStatus(JsonVariant v) {
   v["netMode"]    = NET_MODE;

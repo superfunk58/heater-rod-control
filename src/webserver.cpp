@@ -15,6 +15,7 @@
 #include "history.h"
 #include "energy.h"
 #include "temp_sensors.h"
+#include "json_arena.h"
 #include <Update.h>
 #include <WiFi.h>
 #include <LittleFS.h>
@@ -52,13 +53,13 @@ extern int   VOL_THRESHOLD_W;
 extern int   ONEWIRE_PIN;
 extern bool  HISTORY_AVERAGING;
 
-// Network config globals (owned by main.cpp)
-extern String NET_MODE;
-extern bool   LAN_DHCP;
-extern String LAN_IP;
-extern String LAN_GW;
-extern String LAN_MASK;
-extern String LAN_DNS;
+// Network config globals (owned by main.cpp) — fixed char arrays, no heap.
+extern char NET_MODE[8];
+extern bool LAN_DHCP;
+extern char LAN_IP[16];
+extern char LAN_GW[16];
+extern char LAN_MASK[16];
+extern char LAN_DNS[16];
 
 // MQTT status publish config (owned by main.cpp)
 extern bool MQTT_STATUS_ENABLED;
@@ -170,10 +171,25 @@ void webLog(const char* fmt, ...) {
   webserver_logPushPending = true;
 }
 
-static String paramOr(PsychicRequest *req, const char *name, const String &def) {
-  if (req->hasParam(name)) return req->getParam(name)->value();
+// Direct pointer into the request's parameter value (no String copy).
+static const char *paramOr(PsychicRequest *req, const char *name, const char *def) {
+  if (req->hasParam(name)) return req->getParam(name)->value().c_str();
   return def;
 }
+
+// Interpret a JSON value as bool: accepts real booleans and the string forms
+// used by the form-encoded fallback ("1"/"true"/"on").
+static bool jsonToBool(JsonVariantConst v) {
+  if (v.is<bool>()) return v.as<bool>();
+  const char *s = v.as<const char *>();
+  return s && (!strcmp(s, "1") || !strcmp(s, "true") || !strcmp(s, "on"));
+}
+
+// Arena for the JSON documents built by the HTTP handlers below. All handlers
+// run on the single esp_http_server task (serialized), so one shared arena is
+// safe. reset() before each use — never touches the heap.
+alignas(8) static uint8_t s_httpArenaBuf[2048];
+static JsonArena s_httpArena(s_httpArenaBuf, sizeof(s_httpArenaBuf));
 
 // ---- Route handlers ----------------------------------------------------
 static esp_err_t handleStatus(PsychicRequest *req) {
@@ -190,22 +206,21 @@ static esp_err_t handleStatus(PsychicRequest *req) {
 }
 
 static esp_err_t handleCmd(PsychicRequest *req) {
-  String cmd = paramOr(req, "cmd", "");
+  const char *cmd = paramOr(req, "cmd", "");
   bool changed = false;
   bool persist = false;
-  if      (cmd == "pump_on")      { pumpmanualpower = true;  changed = true; }
-  else if (cmd == "pump_off")     { pumpmanualpower = false; changed = true; }
-  else if (cmd == "regulate_on")  { regulating_power = true;  changed = true; persist = true; }
-  else if (cmd == "regulate_off") { regulating_power = false; changed = true; persist = true; }
-  else if (cmd == "drain_on") {
-    String durStr = paramOr(req, "dur", "3");
-    int durSec = durStr.toInt();
+  if      (!strcmp(cmd, "pump_on"))      { pumpmanualpower = true;  changed = true; }
+  else if (!strcmp(cmd, "pump_off"))     { pumpmanualpower = false; changed = true; }
+  else if (!strcmp(cmd, "regulate_on"))  { regulating_power = true;  changed = true; persist = true; }
+  else if (!strcmp(cmd, "regulate_off")) { regulating_power = false; changed = true; persist = true; }
+  else if (!strcmp(cmd, "drain_on")) {
+    int durSec = atoi(paramOr(req, "dur", "3"));
     if (durSec < 1 || durSec > 60) durSec = 3;  // clamp to 1-60 seconds
     drainPulseMs = durSec * 1000;
     drainTriggerReq = true;
     changed = true;
   }
-  else if (cmd == "drain_off")    { drainCancelReq  = true;  changed = true; }
+  else if (!strcmp(cmd, "drain_off"))    { drainCancelReq  = true;  changed = true; }
   else { return req->reply(400, "text/plain", "unknown cmd"); }
 
   if (persist) ConfigStore::save();
@@ -214,7 +229,8 @@ static esp_err_t handleCmd(PsychicRequest *req) {
 }
 
 static esp_err_t handleConfig(PsychicRequest *req) {
-  JsonDocument doc;
+  s_httpArena.reset();
+  JsonDocument doc(&s_httpArena);
 
   // Start fresh: each config request carries the values to change. Fill a local
   // struct first; the global pending struct is swapped atomically at the end.
@@ -256,16 +272,16 @@ static esp_err_t handleConfig(PsychicRequest *req) {
       doc["pump_cycle_duration"] = req->getParam("pump_cycle_duration")->value().toInt();
     }
     if (req->hasParam("pump_temp_cond")) {
-      doc["pump_temp_cond"] = req->getParam("pump_temp_cond")->value();
+      doc["pump_temp_cond"] = req->getParam("pump_temp_cond")->value().c_str();
     }
     if (req->hasParam("pump_temp_hyst")) {
       doc["pump_temp_hyst"] = req->getParam("pump_temp_hyst")->value().toFloat();
     }
     if (req->hasParam("vol_enabled")) {
-      doc["vol_enabled"] = req->getParam("vol_enabled")->value();
+      doc["vol_enabled"] = req->getParam("vol_enabled")->value().c_str();
     }
     if (req->hasParam("history_averaging")) {
-      doc["history_averaging"] = req->getParam("history_averaging")->value();
+      doc["history_averaging"] = req->getParam("history_averaging")->value().c_str();
     }
     if (req->hasParam("vol_window_min")) {
       doc["vol_window_min"] = req->getParam("vol_window_min")->value().toInt();
@@ -283,25 +299,25 @@ static esp_err_t handleConfig(PsychicRequest *req) {
       doc["max_heater_rod_temp"] = req->getParam("max_heater_rod_temp")->value().toInt();
     }
     if (req->hasParam("net_mode")) {
-      doc["net_mode"] = req->getParam("net_mode")->value();
+      doc["net_mode"] = req->getParam("net_mode")->value().c_str();
     }
     if (req->hasParam("lan_dhcp")) {
-      doc["lan_dhcp"] = req->getParam("lan_dhcp")->value();
+      doc["lan_dhcp"] = req->getParam("lan_dhcp")->value().c_str();
     }
     if (req->hasParam("lan_ip")) {
-      doc["lan_ip"] = req->getParam("lan_ip")->value();
+      doc["lan_ip"] = req->getParam("lan_ip")->value().c_str();
     }
     if (req->hasParam("lan_gw")) {
-      doc["lan_gw"] = req->getParam("lan_gw")->value();
+      doc["lan_gw"] = req->getParam("lan_gw")->value().c_str();
     }
     if (req->hasParam("lan_mask")) {
-      doc["lan_mask"] = req->getParam("lan_mask")->value();
+      doc["lan_mask"] = req->getParam("lan_mask")->value().c_str();
     }
     if (req->hasParam("lan_dns")) {
-      doc["lan_dns"] = req->getParam("lan_dns")->value();
+      doc["lan_dns"] = req->getParam("lan_dns")->value().c_str();
     }
     if (req->hasParam("mqtt_status_enabled")) {
-      doc["mqtt_status_enabled"] = req->getParam("mqtt_status_enabled")->value();
+      doc["mqtt_status_enabled"] = req->getParam("mqtt_status_enabled")->value().c_str();
     }
     if (req->hasParam("mqtt_status_interval")) {
       doc["mqtt_status_interval"] = req->getParam("mqtt_status_interval")->value().toInt();
@@ -374,9 +390,8 @@ static esp_err_t handleConfig(PsychicRequest *req) {
     }
   }
   if (!doc["pump_temp_cond"].isNull()) {
-    String v = doc["pump_temp_cond"];
     local.hasPumpTempCond = true;
-    local.pumpTempCond = (v == "1" || v == "true" || v == "on");
+    local.pumpTempCond = jsonToBool(doc["pump_temp_cond"]);
   }
   if (!doc["pump_temp_hyst"].isNull()) {
     float v = doc["pump_temp_hyst"];
@@ -386,14 +401,12 @@ static esp_err_t handleConfig(PsychicRequest *req) {
     }
   }
   if (!doc["vol_enabled"].isNull()) {
-    String v = doc["vol_enabled"];
     local.hasVolEnabled = true;
-    local.volEnabled = (v == "1" || v == "true" || v == "on");
+    local.volEnabled = jsonToBool(doc["vol_enabled"]);
   }
   if (!doc["history_averaging"].isNull()) {
-    String v = doc["history_averaging"];
     local.hasHistoryAveraging = true;
-    local.historyAveraging = (v == "1" || v == "true" || v == "on");
+    local.historyAveraging = jsonToBool(doc["history_averaging"]);
   }
   if (!doc["vol_window_min"].isNull()) {
     int n = doc["vol_window_min"];
@@ -433,41 +446,35 @@ static esp_err_t handleConfig(PsychicRequest *req) {
     }
   }
   if (!doc["net_mode"].isNull()) {
-    String v = doc["net_mode"];
-    if (v == "wifi" || v == "lan") {
+    const char *v = doc["net_mode"];
+    if (v && (!strcmp(v, "wifi") || !strcmp(v, "lan"))) {
       local.hasNetMode = true;
-      local.netMode = v;
+      strlcpy(local.netMode, v, sizeof(local.netMode));
     }
   }
   if (!doc["lan_dhcp"].isNull()) {
-    String v = doc["lan_dhcp"];
     local.hasLanDhcp = true;
-    local.lanDhcp = (v == "1" || v == "true" || v == "on");
+    local.lanDhcp = jsonToBool(doc["lan_dhcp"]);
   }
   if (!doc["lan_ip"].isNull()) {
-    String v = doc["lan_ip"];
-    local.hasLanIp = true;
-    local.lanIp = v;
+    const char *v = doc["lan_ip"];
+    if (v) { local.hasLanIp = true; strlcpy(local.lanIp, v, sizeof(local.lanIp)); }
   }
   if (!doc["lan_gw"].isNull()) {
-    String v = doc["lan_gw"];
-    local.hasLanGw = true;
-    local.lanGw = v;
+    const char *v = doc["lan_gw"];
+    if (v) { local.hasLanGw = true; strlcpy(local.lanGw, v, sizeof(local.lanGw)); }
   }
   if (!doc["lan_mask"].isNull()) {
-    String v = doc["lan_mask"];
-    local.hasLanMask = true;
-    local.lanMask = v;
+    const char *v = doc["lan_mask"];
+    if (v) { local.hasLanMask = true; strlcpy(local.lanMask, v, sizeof(local.lanMask)); }
   }
   if (!doc["lan_dns"].isNull()) {
-    String v = doc["lan_dns"];
-    local.hasLanDns = true;
-    local.lanDns = v;
+    const char *v = doc["lan_dns"];
+    if (v) { local.hasLanDns = true; strlcpy(local.lanDns, v, sizeof(local.lanDns)); }
   }
   if (!doc["mqtt_status_enabled"].isNull()) {
-    String v = doc["mqtt_status_enabled"];
     local.hasMqttStatusEnabled = true;
-    local.mqttStatusEnabled = (v == "1" || v == "true" || v == "on");
+    local.mqttStatusEnabled = jsonToBool(doc["mqtt_status_enabled"]);
   }
   if (!doc["mqtt_status_interval"].isNull()) {
     int n = doc["mqtt_status_interval"];
@@ -481,11 +488,11 @@ static esp_err_t handleConfig(PsychicRequest *req) {
   // current globals. NetManager only reads these once during setup(), so a
   // reboot is required for them to take effect.
   bool netChanged = false;
-  if (local.hasNetMode) netChanged |= (local.netMode != NET_MODE);
-  if (local.hasLanIp)   netChanged |= (local.lanIp != LAN_IP);
-  if (local.hasLanGw)   netChanged |= (local.lanGw != LAN_GW);
-  if (local.hasLanMask) netChanged |= (local.lanMask != LAN_MASK);
-  if (local.hasLanDns)  netChanged |= (local.lanDns != LAN_DNS);
+  if (local.hasNetMode) netChanged |= (strcmp(local.netMode, NET_MODE) != 0);
+  if (local.hasLanIp)   netChanged |= (strcmp(local.lanIp,   LAN_IP)   != 0);
+  if (local.hasLanGw)   netChanged |= (strcmp(local.lanGw,   LAN_GW)   != 0);
+  if (local.hasLanMask) netChanged |= (strcmp(local.lanMask, LAN_MASK) != 0);
+  if (local.hasLanDns)  netChanged |= (strcmp(local.lanDns,  LAN_DNS)  != 0);
   if (local.hasLanDhcp) netChanged |= (local.lanDhcp != LAN_DHCP);
 
   if (netChanged) {
@@ -506,7 +513,8 @@ static esp_err_t handleConfig(PsychicRequest *req) {
 }
 
 static esp_err_t handleParams(PsychicRequest *req) {
-  JsonDocument doc;
+  s_httpArena.reset();
+  JsonDocument doc(&s_httpArena);
   doc["zeroFeedTarget"] = ZERO_FEED_IN_TARGET;
   doc["maxHeatingPower"] = MAX_HEATING_POWER;
   doc["minPowerThreshold"] = MIN_POWER_THRESHOLD;
@@ -552,13 +560,15 @@ static esp_err_t handleTempScan(PsychicRequest *req) {
     vTaskDelay(pdMS_TO_TICKS(50));
     if (!TempSensors::rescanPending()) break;
   }
-  auto list = TempSensors::scanList();
-  JsonDocument doc;
+  TempSensors::Found list[TempSensors::MAX_SENSORS];
+  const uint8_t listCount = TempSensors::scanList(list, TempSensors::MAX_SENSORS);
+  s_httpArena.reset();
+  JsonDocument doc(&s_httpArena);
   JsonArray sensors = doc["sensors"].to<JsonArray>();
-  for (const auto &f : list) {
+  for (uint8_t k = 0; k < listCount; k++) {
     JsonObject obj = sensors.add<JsonObject>();
-    obj["rom"] = f.romHex;
-    if (f.current_c > -50.0f && f.current_c < 150.0f) obj["current_c"] = round(f.current_c * 10.0f) / 10.0f;
+    obj["rom"] = list[k].romHex;
+    if (list[k].current_c > -50.0f && list[k].current_c < 150.0f) obj["current_c"] = round(list[k].current_c * 10.0f) / 10.0f;
     else obj["current_c"] = nullptr;
   }
   char out[2048];
@@ -568,11 +578,21 @@ static esp_err_t handleTempScan(PsychicRequest *req) {
 
 // GET /api/temp/config -> aktuelle Rolle->ROM-Zuweisung
 static esp_err_t handleTempConfigGet(PsychicRequest *req) {
-  JsonDocument doc;
-  doc["boiler_rom"]  = TempSensors::boilerRom()    ? TempSensors::romToHex(TempSensors::boilerRom())    : "";
-  doc["inlet_rom"]   = TempSensors::inletRom()     ? TempSensors::romToHex(TempSensors::inletRom())     : "";
-  doc["outlet_rom"]  = TempSensors::outletRom()    ? TempSensors::romToHex(TempSensors::outletRom())    : "";
-  doc["hrod_rom"]    = TempSensors::heaterRodRom() ? TempSensors::romToHex(TempSensors::heaterRodRom()) : "";
+  s_httpArena.reset();
+  JsonDocument doc(&s_httpArena);
+  char boilerHex[24], inletHex[24], outletHex[24], hrodHex[24];
+  const uint64_t rBoiler = TempSensors::boilerRom();
+  const uint64_t rInlet  = TempSensors::inletRom();
+  const uint64_t rOutlet = TempSensors::outletRom();
+  const uint64_t rHrod   = TempSensors::heaterRodRom();
+  if (rBoiler) TempSensors::romToHex(rBoiler, boilerHex);
+  if (rInlet)  TempSensors::romToHex(rInlet,  inletHex);
+  if (rOutlet) TempSensors::romToHex(rOutlet, outletHex);
+  if (rHrod)   TempSensors::romToHex(rHrod,   hrodHex);
+  doc["boiler_rom"]  = rBoiler ? boilerHex : "";
+  doc["inlet_rom"]   = rInlet  ? inletHex  : "";
+  doc["outlet_rom"]  = rOutlet ? outletHex : "";
+  doc["hrod_rom"]    = rHrod   ? hrodHex   : "";
   char out[384];
   serializeJson(doc, out, sizeof(out));
   return req->reply(200, "application/json", out);
@@ -583,23 +603,23 @@ static esp_err_t handleTempConfigGet(PsychicRequest *req) {
 static esp_err_t handleTempAssign(PsychicRequest *req) {
   bool any = false;
   if (req->hasParam("boiler_rom")) {
-    String v = req->getParam("boiler_rom")->value();
-    TempSensors::assignBoiler(v.length() ? TempSensors::romFromHex(v) : 0);
+    const String &v = req->getParam("boiler_rom")->value();
+    TempSensors::assignBoiler(v.length() ? TempSensors::romFromHex(v.c_str()) : 0);
     any = true;
   }
   if (req->hasParam("inlet_rom")) {
-    String v = req->getParam("inlet_rom")->value();
-    TempSensors::assignInlet(v.length() ? TempSensors::romFromHex(v) : 0);
+    const String &v = req->getParam("inlet_rom")->value();
+    TempSensors::assignInlet(v.length() ? TempSensors::romFromHex(v.c_str()) : 0);
     any = true;
   }
   if (req->hasParam("outlet_rom")) {
-    String v = req->getParam("outlet_rom")->value();
-    TempSensors::assignOutlet(v.length() ? TempSensors::romFromHex(v) : 0);
+    const String &v = req->getParam("outlet_rom")->value();
+    TempSensors::assignOutlet(v.length() ? TempSensors::romFromHex(v.c_str()) : 0);
     any = true;
   }
   if (req->hasParam("hrod_rom")) {
-    String v = req->getParam("hrod_rom")->value();
-    TempSensors::assignHeaterRod(v.length() ? TempSensors::romFromHex(v) : 0);
+    const String &v = req->getParam("hrod_rom")->value();
+    TempSensors::assignHeaterRod(v.length() ? TempSensors::romFromHex(v.c_str()) : 0);
     any = true;
   }
   if (!any) return req->reply(400, "text/plain", "no fields");

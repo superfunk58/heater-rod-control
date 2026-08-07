@@ -58,12 +58,14 @@ struct PendingConfig {
   bool hasMaxBoilerTemp = false;        int maxBoilerTemp = 0;
   bool hasMaxHeaterRodTemp = false;    int maxHeaterRodTemp = 0;
 
-  bool hasNetMode = false;              String netMode;
+  // Fixed-size char arrays (not String): this struct is copied in/out of the
+  // config mutex on every settings change — String members would churn the heap.
+  bool hasNetMode = false;              char netMode[8] = "";
   bool hasLanDhcp = false;              bool lanDhcp = false;
-  bool hasLanIp = false;                String lanIp;
-  bool hasLanGw = false;                String lanGw;
-  bool hasLanMask = false;              String lanMask;
-  bool hasLanDns = false;               String lanDns;
+  bool hasLanIp = false;                char lanIp[16] = "";
+  bool hasLanGw = false;                char lanGw[16] = "";
+  bool hasLanMask = false;              char lanMask[16] = "";
+  bool hasLanDns = false;               char lanDns[16] = "";
 
   bool hasMqttStatusEnabled = false;    bool mqttStatusEnabled = false;
   bool hasMqttStatusInterval = false;   int mqttStatusIntervalSec = 0;

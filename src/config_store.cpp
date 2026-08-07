@@ -22,12 +22,12 @@ extern int   VOL_WINDOW_MIN;
 extern int   VOL_THRESHOLD_W;
 extern int   ONEWIRE_PIN;
 extern bool  HISTORY_AVERAGING;
-extern String NET_MODE;     // "wifi" | "lan"
-extern bool   LAN_DHCP;
-extern String LAN_IP;
-extern String LAN_GW;
-extern String LAN_MASK;
-extern String LAN_DNS;
+extern char NET_MODE[8];    // "wifi" | "lan"
+extern bool LAN_DHCP;
+extern char LAN_IP[16];
+extern char LAN_GW[16];
+extern char LAN_MASK[16];
+extern char LAN_DNS[16];
 
 extern bool MQTT_STATUS_ENABLED;
 extern unsigned long MQTT_STATUS_INTERVAL_MS;
@@ -59,12 +59,15 @@ void load() {
   VOL_THRESHOLD_W          = p.getInt   ("volth", VOL_THRESHOLD_W);
   ONEWIRE_PIN              = p.getInt   ("owpin", ONEWIRE_PIN);
   HISTORY_AVERAGING        = p.getBool  ("havg",  HISTORY_AVERAGING);
-  NET_MODE                 = p.getString("netmode", NET_MODE);
+  // getString(key, buf, maxLen) writes directly into the fixed char arrays —
+  // no temporary heap String (the String-returning overload would allocate).
+  // Missing keys leave the compiled-in defaults untouched.
+  p.getString("netmode", NET_MODE, sizeof(NET_MODE));
   LAN_DHCP                 = p.getBool  ("landhcp", LAN_DHCP);
-  LAN_IP                   = p.getString("lanip",   LAN_IP);
-  LAN_GW                   = p.getString("langw",   LAN_GW);
-  LAN_MASK                 = p.getString("lanmask", LAN_MASK);
-  LAN_DNS                  = p.getString("landns",  LAN_DNS);
+  p.getString("lanip",   LAN_IP,   sizeof(LAN_IP));
+  p.getString("langw",   LAN_GW,   sizeof(LAN_GW));
+  p.getString("lanmask", LAN_MASK, sizeof(LAN_MASK));
+  p.getString("landns",  LAN_DNS,  sizeof(LAN_DNS));
   MQTT_STATUS_ENABLED      = p.getBool  ("mqtten",  MQTT_STATUS_ENABLED);
   MQTT_STATUS_INTERVAL_MS  = p.getULong ("mqttint", MQTT_STATUS_INTERVAL_MS);
 

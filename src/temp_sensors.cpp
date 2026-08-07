@@ -20,7 +20,7 @@ static constexpr float    T_MAX_VALID         = 100.0f;
 static constexpr const char *NVS_NS           = "temp";
 
 // ----- State -----
-static constexpr uint8_t MAX_SENSORS = 8;
+// MAX_SENSORS lives in temp_sensors.h (shared with callers of scanList()).
 
 static OneWire           *s_wire = nullptr;
 static DallasTemperature *s_dt   = nullptr;
@@ -62,29 +62,29 @@ static uint64_t romFromBytes(const uint8_t in[8]) {
   return r;
 }
 
-String romToHex(uint64_t rom) {
+void romToHex(uint64_t rom, char out[24]) {
   uint8_t b[8]; romToBytes(rom, b);
-  // Use snprintf into a fixed buffer - avoids repeated String heap reallocations.
-  char buf[24];  // "AA-BB-CC-DD-EE-FF-GG-HH\0" = 23 chars + NUL
-  snprintf(buf, sizeof(buf), "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X",
+  // snprintf into the caller's fixed buffer - zero heap allocation.
+  snprintf(out, 24, "%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X",
            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
-  return String(buf);
 }
 
-uint64_t romFromHex(const String &hex) {
+uint64_t romFromHex(const char *hex) {
+  // Parse hex digit pairs directly; separators ('-', ':', ' ') are skipped.
+  // No String tokenizer -> no heap allocation.
   uint8_t b[8] = {0};
   int idx = 0;
-  String tok;
-  for (size_t i = 0; i < hex.length() && idx < 8; i++) {
-    char c = hex[i];
-    if (c == '-' || c == ':' || c == ' ') {
-      if (tok.length()) { b[idx++] = (uint8_t)strtoul(tok.c_str(), nullptr, 16); tok = ""; }
-    } else {
-      tok += c;
-      if (tok.length() == 2) { b[idx++] = (uint8_t)strtoul(tok.c_str(), nullptr, 16); tok = ""; }
-    }
+  int hi = -1;  // pending high nibble
+  for (const char *p = hex; *p && idx < 8; p++) {
+    const char c = *p;
+    int v = -1;
+    if      (c >= '0' && c <= '9') v = c - '0';
+    else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+    if (v < 0) continue;  // separator
+    if (hi < 0) { hi = v; }
+    else { b[idx++] = (uint8_t)((hi << 4) | v); hi = -1; }
   }
-  if (tok.length() && idx < 8) b[idx++] = (uint8_t)strtoul(tok.c_str(), nullptr, 16);
   return romFromBytes(b);
 }
 
@@ -196,7 +196,8 @@ void begin(uint8_t pin) {
       if (addr[0] == 0x28) {
         s_roms[s_count] = romFromBytes(addr);
         s_vals[s_count] = NAN;
-        webLog("[Temp]  Sensor[%d] ROM=%s", s_count, romToHex(s_roms[s_count]).c_str());
+        char hex[24]; romToHex(s_roms[s_count], hex);
+        webLog("[Temp]  Sensor[%d] ROM=%s", s_count, hex);
         s_count++;
       } else {
         webLog("[Temp]  Skipping non-DS18B20 (family=%02X)", addr[0]);
@@ -253,7 +254,7 @@ void tick() {
   bool anySensorLost = false;
   uint8_t totalFails = 0;
   for (uint8_t i = 0; i < s_count && i < MAX_SENSORS; i++) {
-    float t;
+    float t = NAN;  // readSensorByRomSafe may fail without writing (no driver)
     const bool ok = readSensorByRomSafe(s_roms[i], t);
     if (ok) {
       s_vals[i] = t;
@@ -309,19 +310,17 @@ float getInletC()     { return s_inletLast;  }
 float getOutletC()    { return s_outletLast; }
 float getHeaterRodC() { return s_hrodLast;   }
 
-std::vector<Found> scanList() {
-  std::vector<Found> out;
+uint8_t scanList(Found out[], uint8_t maxCount) {
+  // Snapshot ROMs/values under the lock (fast), format hex strings outside it.
   portENTER_CRITICAL(&s_mux);
-  out.reserve(s_count);
-  for (uint8_t i = 0; i < s_count; i++) {
-    Found f;
-    f.rom = s_roms[i];
-    f.current_c = s_vals[i];
-    f.romHex = romToHex(s_roms[i]);
-    out.push_back(f);
+  const uint8_t n = (s_count < maxCount) ? s_count : maxCount;
+  for (uint8_t i = 0; i < n; i++) {
+    out[i].rom = s_roms[i];
+    out[i].current_c = s_vals[i];
   }
   portEXIT_CRITICAL(&s_mux);
-  return out;
+  for (uint8_t i = 0; i < n; i++) romToHex(out[i].rom, out[i].romHex);
+  return n;
 }
 
 void requestRescan() { s_rescanReq = true; }
@@ -362,13 +361,14 @@ void rescan() {
     for (uint8_t i = 0; i < count; i++) {
       uint8_t addr[8];
       romToBytes(roms[i], addr);
+      char hex[24]; romToHex(roms[i], hex);
       float t = s_dt->getTempC(addr);
       if (t == DEVICE_DISCONNECTED_C || t < T_MIN_VALID || t > T_MAX_VALID) {
         vals[i] = NAN;
-        webLog("[Temp]  Rescan read FAIL[%d] ROM=%s", i, romToHex(roms[i]).c_str());
+        webLog("[Temp]  Rescan read FAIL[%d] ROM=%s", i, hex);
       } else {
         vals[i] = t;
-        webLog("[Temp]  Rescan read OK [%d] ROM=%s T=%.2f C", i, romToHex(roms[i]).c_str(), t);
+        webLog("[Temp]  Rescan read OK [%d] ROM=%s T=%.2f C", i, hex, t);
       }
     }
   }

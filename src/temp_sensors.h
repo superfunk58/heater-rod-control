@@ -16,14 +16,16 @@
 #pragma once
 
 #include <Arduino.h>
-#include <vector>
 
 namespace TempSensors {
 
+// Max. gleichzeitig gefundene DS18B20 (Scan-Array ist statisch, kein Heap).
+static constexpr uint8_t MAX_SENSORS = 8;
+
 struct Found {
-  uint64_t rom;          // ROM-ID des Sensors (0 = ungültig)
-  float    current_c;    // letzter gelesener Wert (NAN wenn unbekannt)
-  String   romHex;       // hex-Darstellung "28-FF-AA-BB-..."
+  uint64_t rom;            // ROM-ID des Sensors (0 = ungültig)
+  float    current_c;      // letzter gelesener Wert (NAN wenn unbekannt)
+  char     romHex[24];     // hex-Darstellung "28-FF-AA-BB-..." (fixed, kein Heap)
 };
 
 // Initialisiert den OneWire-Bus auf dem angegebenen GPIO und lädt das
@@ -43,7 +45,8 @@ float getHeaterRodC();
 uint8_t sensorCount();
 
 // Liste aller aktuell gefundenen Sensoren mit ihren Live-Werten (für UI-Scan).
-std::vector<Found> scanList();
+// Füllt das Caller-Array (kein Heap), gibt die Anzahl Einträge zurück.
+uint8_t scanList(Found out[], uint8_t maxCount);
 
 // Manuelles Rescan des OneWire-Bus (für Button-Scan).
 // ACHTUNG: blockierende OneWire-I/O + mutiert die Sensor-Arrays. Darf NUR aus
@@ -70,7 +73,8 @@ void assignOutlet(uint64_t rom);
 void assignHeaterRod(uint64_t rom);
 
 // Hilfsfunktionen für ROM <-> Hex-String (z.B. "28-FF-AA-12-...")
-String romToHex(uint64_t rom);
-uint64_t romFromHex(const String &hex);
+// Heap-frei: romToHex schreibt in den Caller-Puffer, romFromHex liest C-String.
+void romToHex(uint64_t rom, char out[24]);
+uint64_t romFromHex(const char *hex);
 
 }  // namespace TempSensors

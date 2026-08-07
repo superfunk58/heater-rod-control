@@ -49,8 +49,13 @@ bool usingEthernet();
 // "lan" | "wifi" | "none"
 const char *activeIface();
 
-// IP of the active interface ("0.0.0.0" if offline).
-String activeIP();
+// IP of the active interface ("0.0.0.0" if offline). Points to a static
+// buffer — no heap allocation; valid until the next activeIP() call.
+const char *activeIP();
+
+// SSID of the current WiFi connection ("" if not on WiFi / not connected).
+// Cached at connect time so the 2 s status path never allocates a String.
+const char *ssid();
 
 // Raw W5500 PHY link state (cable plugged + negotiated), independent of IP.
 bool ethLinkUp();

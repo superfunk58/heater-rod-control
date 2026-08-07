@@ -3,10 +3,12 @@
 
 #include "history.h"
 #include "webserver.h"
+#include "json_arena.h"
 #include <Preferences.h>
 #include <nvs_flash.h>
 #include <time.h>
 #include <sys/time.h>
+#include <cstring>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -552,25 +554,26 @@ static void parseRangeParams(PsychicRequest* req, uint32_t& startEpoch, uint32_t
   endEpoch = nowEpoch;
   
   // Check for 'range' parameter (1h, 24h, 7d, 30d, 3m)
+  // c_str() view instead of a String copy — no heap allocation.
   if (req->hasParam("range")) {
-    String range = req->getParam("range")->value();
-    if (range == "1h") {
+    const char *range = req->getParam("range")->value().c_str();
+    if (!strcmp(range, "1h")) {
       startEpoch = nowEpoch > 3600      ? nowEpoch - 3600      : 0;
-    } else if (range == "6h") {
+    } else if (!strcmp(range, "6h")) {
       startEpoch = nowEpoch > 21600     ? nowEpoch - 21600     : 0;
-    } else if (range == "12h") {
+    } else if (!strcmp(range, "12h")) {
       startEpoch = nowEpoch > 43200     ? nowEpoch - 43200     : 0;
-    } else if (range == "24h" || range == "1d") {
+    } else if (!strcmp(range, "24h") || !strcmp(range, "1d")) {
       startEpoch = nowEpoch > 86400     ? nowEpoch - 86400     : 0;
-    } else if (range == "2d") {
+    } else if (!strcmp(range, "2d")) {
       startEpoch = nowEpoch > 172800    ? nowEpoch - 172800    : 0;
-    } else if (range == "7d") {
+    } else if (!strcmp(range, "7d")) {
       startEpoch = nowEpoch > 604800    ? nowEpoch - 604800    : 0;
-    } else if (range == "14d") {
+    } else if (!strcmp(range, "14d")) {
       startEpoch = nowEpoch > 1209600   ? nowEpoch - 1209600   : 0;
-    } else if (range == "30d") {
+    } else if (!strcmp(range, "30d")) {
       startEpoch = nowEpoch > 2592000   ? nowEpoch - 2592000   : 0;
-    } else if (range == "90d" || range == "3m") {
+    } else if (!strcmp(range, "90d") || !strcmp(range, "3m")) {
       startEpoch = nowEpoch > 7776000   ? nowEpoch - 7776000   : 0;
     }
   }
@@ -722,8 +725,14 @@ static esp_err_t handleHistoryCsv(PsychicRequest *req) {
 static esp_err_t handleHistoryInfo(PsychicRequest *req) {
   time_t now; time(&now);
   const uint32_t nowEpoch = (now >= 1700000000) ? (uint32_t)now : 0;
-  
-  JsonDocument doc;
+
+  // Arena-backed doc + fixed output buffer: no heap String, no JsonDocument
+  // heap pool. Runs on the esp_http_server task (serialized with the other
+  // HTTP handlers, but keep a local arena anyway — cheap and self-contained).
+  alignas(8) static uint8_t arenaBuf[1024];
+  static JsonArena arena(arenaBuf, sizeof(arenaBuf));
+  arena.reset();
+  JsonDocument doc(&arena);
   doc["now_epoch"] = nowEpoch;
   doc["short_term"]["capacity"] = CAPACITY_SHORT;
   doc["short_term"]["count"] = s_count_short;
@@ -734,10 +743,10 @@ static esp_err_t handleHistoryInfo(PsychicRequest *req) {
   doc["long_term"]["interval_sec"] = INTERVAL_LONG_SEC;
   doc["long_term"]["retention_days"] = (CAPACITY_LONG * INTERVAL_LONG_SEC) / 86400;
   doc["total_count"] = count();
-  
-  String jsonString;
-  serializeJson(doc, jsonString);
-  return req->reply(200, "application/json", jsonString.c_str());
+
+  char json[384];
+  serializeJson(doc, json, sizeof(json));
+  return req->reply(200, "application/json", json);
 }
 
 void registerRoutes(PsychicHttpServer &srv) {

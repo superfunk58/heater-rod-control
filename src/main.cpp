@@ -13,6 +13,7 @@
 #include "energy.h"           // Heizstab Energy integrator (Wh, monthly chunks)
 #include "temp_sensors.h"     // DS18B20 OneWire temp sensors (Boiler + Heizstab-Zulauf)
 #include "net_manager.h"      // WiFi/W5500 LAN network management
+#include "json_arena.h"       // bump allocator for heap-free ArduinoJson docs
 #include <LittleFS.h>         // Web UI assets
 #include <time.h>             // NTP-based time for history timestamps
 #include <Preferences.h>      // NVS for persistent reboot counter
@@ -107,12 +108,15 @@ volatile unsigned long drainPulseMs = 3000;  // requested pulse duration (ms), s
 //   "lan"  = W5500 Ethernet primary. LAN is tried first; if it fails,
 //            the device falls back to WiFi. Once LAN gets an IP, WiFi is off.
 // DHCP (LAN_DHCP=true) is the default for LAN; static IP is adjustable in the UI.
-String NET_MODE  = "wifi";              // "wifi" | "lan"
-bool   LAN_DHCP  = true;                // true = DHCP, false = static IP below
-String LAN_IP    = "192.168.178.60";    // static IP for the LAN interface
-String LAN_GW    = "192.168.178.1";     // gateway
-String LAN_MASK  = "255.255.255.0";     // subnet mask
-String LAN_DNS   = "192.168.178.1";     // DNS server
+// Fixed-size char arrays instead of String: these are read on the 2 s status
+// path and rewritten on every config change — heap Strings here are a classic
+// fragmentation source on long uptimes.
+char   NET_MODE[8]  = "wifi";           // "wifi" | "lan"
+bool   LAN_DHCP     = true;             // true = DHCP, false = static IP below
+char   LAN_IP[16]   = "192.168.178.60"; // static IP for the LAN interface
+char   LAN_GW[16]   = "192.168.178.1";  // gateway
+char   LAN_MASK[16] = "255.255.255.0";  // subnet mask
+char   LAN_DNS[16]  = "192.168.178.1";  // DNS server
 volatile bool drainTriggerReq = false;  // set by HTTP task -> start pulse
 volatile bool drainCancelReq  = false;  // set by HTTP task -> stop pulse early
 bool          drainActive     = false;  // true while relay energized (loop-owned)
@@ -243,7 +247,15 @@ static unsigned long s_lastNtpOkMs = 0;
 
 void sendupdate(bool force)
 {
-  JsonDocument doc;
+  // Static arena-backed JsonDocument: the variant/string pools are served from
+  // a fixed buffer instead of the heap. sendupdate() runs at least every 2 s;
+  // a heap-backed JsonDocument alloc+frees ~2 KB per call and slowly fragments
+  // the heap. Only ever called from the loop task, so a shared arena is safe.
+  alignas(8) static uint8_t s_jsonArenaBuf[3072];
+  static JsonArena s_jsonArena(s_jsonArenaBuf, sizeof(s_jsonArenaBuf));
+  static JsonDocument doc(&s_jsonArena);
+  s_jsonArena.reset();
+  doc.clear();
   doc["Powerdraw"] = powerdrawnumber;
   doc["powerdrawsetpoint"] = powerdrawsetpoint;
   doc["wattneeded"] = wattneeded;
@@ -269,8 +281,10 @@ void sendupdate(bool force)
   doc["netMode"] = NetManager::activeIface();
   doc["ipAddress"] = NetManager::activeIP();
   // SSID/RSSI are only meaningful on WiFi; report empty/0 over LAN.
+  // NetManager::ssid() returns a cached C string — WiFi.SSID() would allocate
+  // a heap String on every call (every 2 s here).
   bool onWifi = strcmp(NetManager::activeIface(), "wifi") == 0;
-  doc["wifiSSID"] = onWifi ? WiFi.SSID() : String("");
+  doc["wifiSSID"] = onWifi ? NetManager::ssid() : "";
   doc["rssi"] = onWifi ? WiFi.RSSI() : 0;
   doc["lanConnected"] = NetManager::usingEthernet();
   uint32_t uptimeSec = (uint32_t)(millis() / 1000);
@@ -339,6 +353,11 @@ void sendupdate(bool force)
   doc["pumpTempHystC"]       = PUMP_TEMP_HYST_C;
   doc["volEnabled"]          = VOL_ENABLED;
   doc["volActive"]           = s_volatileActive;
+
+  if (doc.overflowed()) {
+    webLog("[JSON] status doc overflowed static arena (%u B)", (unsigned)sizeof(s_jsonArenaBuf));
+    return;
+  }
 
   // Serialize into a fixed buffer to avoid frequent heap churn from transient
   // String allocations on the 2s status path.
@@ -785,12 +804,12 @@ static void applyPendingConfig() {
   if (p.hasMaxBoilerTemp) MAX_BOILER_TEMP_C = p.maxBoilerTemp;
   if (p.hasMaxHeaterRodTemp) MAX_HEATER_ROD_TEMP_C = p.maxHeaterRodTemp;
 
-  if (p.hasNetMode) NET_MODE = p.netMode;
+  if (p.hasNetMode) strlcpy(NET_MODE, p.netMode, sizeof(NET_MODE));
   if (p.hasLanDhcp) LAN_DHCP = p.lanDhcp;
-  if (p.hasLanIp) LAN_IP = p.lanIp;
-  if (p.hasLanGw) LAN_GW = p.lanGw;
-  if (p.hasLanMask) LAN_MASK = p.lanMask;
-  if (p.hasLanDns) LAN_DNS = p.lanDns;
+  if (p.hasLanIp)   strlcpy(LAN_IP,   p.lanIp,   sizeof(LAN_IP));
+  if (p.hasLanGw)   strlcpy(LAN_GW,   p.lanGw,   sizeof(LAN_GW));
+  if (p.hasLanMask) strlcpy(LAN_MASK, p.lanMask, sizeof(LAN_MASK));
+  if (p.hasLanDns)  strlcpy(LAN_DNS,  p.lanDns,  sizeof(LAN_DNS));
 
   if (p.hasMqttStatusEnabled) MQTT_STATUS_ENABLED = p.mqttStatusEnabled;
   if (p.hasMqttStatusInterval) MQTT_STATUS_INTERVAL_MS = (unsigned long)p.mqttStatusIntervalSec * 1000UL;
