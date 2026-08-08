@@ -11,6 +11,7 @@ extern int   POWER_CHANGE_THRESHOLD;
 extern int   MAX_BOILER_TEMP_C;
 extern int   MAX_HEATER_ROD_TEMP_C;
 extern float correctionGain;
+extern float dacCorrectionFactor;
 extern unsigned long PUMP_MIN_RUNTIME_MS;
 extern unsigned long PUMP_CYCLE_INTERVAL_MIN;
 extern unsigned long PUMP_CYCLE_DURATION_SEC;
@@ -48,6 +49,12 @@ void load() {
   MAX_BOILER_TEMP_C      = p.getInt   ("mbtc",  MAX_BOILER_TEMP_C);
   MAX_HEATER_ROD_TEMP_C  = p.getInt   ("mhrc",  MAX_HEATER_ROD_TEMP_C);
   correctionGain         = p.getFloat ("gain",  correctionGain);
+  dacCorrectionFactor    = p.getFloat ("dcorr", dacCorrectionFactor);
+  // Sanity: a corrupt/out-of-range learned factor would scale every DAC write
+  // wrongly; reset to 1.0 (no correction) instead of trusting it.
+  if (isnan(dacCorrectionFactor) || dacCorrectionFactor < 0.8f || dacCorrectionFactor > 1.2f) {
+    dacCorrectionFactor = 1.0f;
+  }
   PUMP_MIN_RUNTIME_MS    = p.getULong ("pmrt",  PUMP_MIN_RUNTIME_MS);
   PUMP_CYCLE_INTERVAL_MIN  = p.getULong ("pcim",  PUMP_CYCLE_INTERVAL_MIN);
   PUMP_CYCLE_DURATION_SEC  = p.getULong ("pcds",  PUMP_CYCLE_DURATION_SEC);
@@ -91,6 +98,7 @@ void save() {
   p.putInt   ("mbtc", MAX_BOILER_TEMP_C);
   p.putInt   ("mhrc", MAX_HEATER_ROD_TEMP_C);
   p.putFloat ("gain", correctionGain);
+  p.putFloat ("dcorr", dacCorrectionFactor);
   p.putULong ("pmrt", PUMP_MIN_RUNTIME_MS);
   p.putULong ("pcim", PUMP_CYCLE_INTERVAL_MIN);
   p.putULong ("pcds", PUMP_CYCLE_DURATION_SEC);
@@ -110,6 +118,13 @@ void save() {
   p.putString("landns",  LAN_DNS);
   p.putBool  ("mqtten",  MQTT_STATUS_ENABLED);
   p.putULong ("mqttint", MQTT_STATUS_INTERVAL_MS);
+  p.end();
+}
+
+void saveCorrectionFactor() {
+  Preferences p;
+  if (!p.begin(NS, /*readOnly*/ false)) return;
+  p.putFloat("dcorr", dacCorrectionFactor);
   p.end();
 }
 

@@ -14,4 +14,8 @@ void load();
 // Cheap (NVS uses wear-levelling), but debouncing is still nice on hot paths.
 void save();
 
+// Persist only the learned dacCorrectionFactor (single-key write).
+// Called from the regulation loop, throttled there against flash wear.
+void saveCorrectionFactor();
+
 }  // namespace ConfigStore

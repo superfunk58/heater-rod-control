@@ -107,8 +107,8 @@ input:focus,select:focus{outline:none;border-color:#38bdf8}
 <div class="grid">
 <div class="m"><div class="ml">Netzbezug</div><div id="vPd" class="mv">&mdash;</div></div>
 <div class="m"><div class="ml">Zu Verbrauchen</div><div id="vPc" class="mv">&mdash;</div></div>
-<div class="m"><div class="ml">Heizleistung</div><div id="vWn" class="mv">&mdash;</div></div>
-<div class="m"><div class="ml">DAC Output</div><div id="vDa" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">Heizleistung (Soll)</div><div id="vWn" class="mv">&mdash;</div></div>
+<div class="m"><div class="ml">DAC Output (0&ndash;10 V)</div><div id="vDa" class="mv">&mdash;</div></div>
 <div class="m"><div class="ml">Meter Alter</div><div id="vAg" class="mv">&mdash;</div></div>
 <div class="m"><div class="ml">Gain</div><div id="vGa" class="mv">&mdash;</div></div>
 </div>
@@ -360,7 +360,9 @@ function render(s) {
   $('vPd').className = 'mv ' + (s.Powerdraw > 20 ? 'r' : s.Powerdraw < -20 ? 'g' : '');
   $('vPc').textContent = s.powerToConsume + ' W';
   $('vWn').textContent = s.wattneeded + ' W';
-  $('vDa').textContent = s.DACOutput;
+  // GP8413 is 15-bit (0..32767) on a 0-10 V range: show % and V, not the raw count
+  $('vDa').textContent = Math.round(s.DACOutput / 32767 * 100) + ' % (' +
+                         (s.DACOutput / 32767 * 10).toFixed(1) + ' V)';
   $('vAg').textContent = s.powerDrawAge < 0 ? '—' : s.powerDrawAge + ' s';
   $('vAg').className = 'mv ' + (s.powerDrawAge > 10 ? 'r' : s.powerDrawAge > 5 ? 'w' : 'g');
   $('vGa').textContent = s.correctionGain.toFixed(2);
@@ -369,7 +371,7 @@ function render(s) {
     $('mSolarAc').style.display = '';
   }
   setLed('lReg', s.Regulating);
-  setLed('lHeat', s.heating);
+  setLed('lHeat', s.heating, s.noLoadResponse);
   setLed('lPump', s.pumpmanualpower || s.pumpautocontrolled);
   setLed('lAuto', s.pumpautocontrolled);
   setLed('lCycle', s.pumpCycleActive);
