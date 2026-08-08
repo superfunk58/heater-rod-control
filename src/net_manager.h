@@ -7,8 +7,11 @@
 //   "lan"  : W5500 Ethernet is primary. On boot the LAN interface is started
 //            first (DHCP by default, or static IP when LAN_DHCP=false). If the
 //            LAN does not obtain a link/IP within ~15 s, WiFi is started as a
-//            fallback. Once the LAN obtains an IP, WiFi is switched OFF fully.
-//            If the LAN later goes down, WiFi is brought back automatically.
+//            fallback. Once the LAN obtains an IP AND the MQTT broker is
+//            reachable through the W5500 (TCP probe bound to the ETH IP),
+//            WiFi is switched OFF fully. If the LAN later goes down, WiFi is
+//            brought back automatically and stays up until the LAN is
+//            verified again.
 //
 // DHCP (LAN_DHCP=true) is the default for LAN and is adjustable in the web UI.
 // When LAN_DHCP=false the W5500 uses the static IP/gateway/mask/DNS below.

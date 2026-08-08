@@ -3,7 +3,9 @@
 #include <ETH.h>
 #include <SPI.h>
 #include <ESPmDNS.h>
-#include "secrets.h"     // WLAN_SSID / WLAN_PASS
+#include <lwip/sockets.h>
+#include <errno.h>
+#include "secrets.h"     // WLAN_SSID / WLAN_PASS / AIO_SERVER / AIO_SERVERPORT
 #include "webserver.h"   // webLog()
 
 // Network configuration globals (owned by main.cpp, persisted by ConfigStore).
@@ -47,10 +49,140 @@ static unsigned long s_lanDeadline = 0;        // millis() when LAN first-attemp
 static unsigned long s_wifiOutageStart   = 0;    // start of current WiFi outage
 static unsigned long s_lastWifiReconnect = 0;   // rate-limit reconnect attempts
 
+// ---- LAN verification via MQTT broker probe --------------------------------
+// WiFi is only switched off once the LAN has proven it can reach the MQTT
+// broker END-TO-END through the W5500: a TCP socket is bound to the ETH IP
+// (so lwIP routes it out of the Ethernet netif even while the WiFi fallback
+// is the default route) and a non-blocking connect() to the broker must
+// succeed. A bare DHCP lease is not enough (wrong VLAN, missing gateway, ...).
+// The broker is the probe target (not NTP) because it is the service this
+// device actually needs — and it stays reachable when the internet is down.
+static int           s_probeSock      = -1;   // lwIP socket of the current attempt
+static IPAddress     s_probeServer;           // resolved MQTT broker IP
+static bool          s_probeActive    = false;
+static bool          s_lanVerified    = false;  // broker reached since link-up
+static uint8_t       s_probeAttempts  = 0;
+static unsigned long s_probeSince     = 0;    // millis() when current connect started
+static unsigned long s_probeNextStart = 0;    // backoff after a failed probe round
+
+static const uint8_t       PROBE_MAX_ATTEMPTS = 5;
+static const unsigned long PROBE_TIMEOUT_MS   = 3000;   // per connect attempt
+static const unsigned long PROBE_RETRY_MS     = 60000;  // after a failed round
+
 // Format an IPAddress as "a.b.c.d" without heap Strings (IPAddress::toString()
 // allocates; used on the 2 s status path and in network event handlers).
 static void fmtIP(char *buf, size_t len, const IPAddress &ip) {
   snprintf(buf, len, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+}
+
+// Resolve AIO_SERVER (hostname or IP literal — hostByName handles both).
+static bool resolveProbeHost(const char *host, IPAddress &out) {
+  return Network.hostByName(host, out) == 1;
+}
+
+static void probeClose() {
+  if (s_probeSock >= 0) {
+    close(s_probeSock);
+    s_probeSock = -1;
+  }
+}
+
+// Start one non-blocking TCP connect to the broker, bound to the W5500's IP
+// so the probe is forced out of the Ethernet interface.
+static bool probeConnectStart(unsigned long nowMs) {
+  probeClose();
+  int s = socket(AF_INET, SOCK_STREAM, 0);
+  if (s < 0) return false;
+  fcntl(s, F_SETFL, O_NONBLOCK);
+
+  struct sockaddr_in local = {};
+  local.sin_family      = AF_INET;
+  local.sin_port        = 0;                       // ephemeral
+  local.sin_addr.s_addr = (uint32_t)ETH.localIP();
+  if (bind(s, (struct sockaddr *)&local, sizeof(local)) < 0) {
+    close(s);
+    return false;
+  }
+
+  struct sockaddr_in srv = {};
+  srv.sin_family      = AF_INET;
+  srv.sin_port        = htons(AIO_SERVERPORT);
+  srv.sin_addr.s_addr = (uint32_t)s_probeServer;
+  if (connect(s, (struct sockaddr *)&srv, sizeof(srv)) < 0 && errno != EINPROGRESS) {
+    close(s);
+    return false;
+  }
+  s_probeSock  = s;
+  s_probeSince = nowMs;
+  return true;
+}
+
+// Start one verification round: resolve the broker address, then let
+// lanVerifyService() run the connect attempts non-blocking.
+static void lanVerifyStart(unsigned long nowMs) {
+  probeClose();   // drop any stale socket from a link flap
+  if (!resolveProbeHost(AIO_SERVER, s_probeServer)) {
+    Serial.println("[Net] LAN verify: broker DNS lookup failed -> retry in 60s");
+    webLog("[Net] LAN verify: broker DNS lookup failed");
+    s_probeNextStart = nowMs + PROBE_RETRY_MS;
+    return;
+  }
+  {
+    char ip[16]; fmtIP(ip, sizeof(ip), s_probeServer);
+    Serial.printf("[Net] LAN verify: probing MQTT broker %s:%u via W5500\n",
+                  ip, (unsigned)AIO_SERVERPORT);
+    webLog("[Net] LAN verify: probing MQTT broker %s:%u via W5500", ip, (unsigned)AIO_SERVERPORT);
+  }
+  s_probeAttempts = 0;
+  s_probeActive   = true;
+}
+
+// Non-blocking probe driver. Call every loop() while the LAN has an IP but is
+// not yet verified. Sets s_lanVerified = true once a TCP connect to the MQTT
+// broker succeeds through the W5500.
+static void lanVerifyService(unsigned long nowMs) {
+  if (s_lanVerified) return;
+  if (!s_probeActive) {
+    if ((long)(nowMs - s_probeNextStart) >= 0) lanVerifyStart(nowMs);
+    return;
+  }
+
+  // No connect currently in flight: start the next attempt (or give up).
+  if (s_probeSock < 0) {
+    if (s_probeAttempts >= PROBE_MAX_ATTEMPTS) {
+      s_probeActive    = false;
+      s_probeNextStart = nowMs + PROBE_RETRY_MS;
+      Serial.println("[Net] LAN verify FAILED (broker unreachable) -> keeping WiFi, retry in 60s");
+      webLog("[Net] LAN verify: broker unreachable, keeping WiFi on");
+      return;
+    }
+    probeConnectStart(nowMs);   // a false return counts as a failed attempt
+    s_probeAttempts++;
+    return;
+  }
+
+  // Connect in flight: poll for completion (writable) without blocking.
+  fd_set wfds;
+  FD_ZERO(&wfds);
+  FD_SET(s_probeSock, &wfds);
+  struct timeval tv = {0, 0};
+  if (select(s_probeSock + 1, nullptr, &wfds, nullptr, &tv) > 0) {
+    int err = 0;
+    socklen_t errLen = sizeof(err);
+    getsockopt(s_probeSock, SOL_SOCKET, SO_ERROR, &err, &errLen);
+    probeClose();
+    if (err == 0) {
+      s_probeActive = false;
+      s_lanVerified = true;
+      Serial.println("[Net] LAN verified (MQTT broker reachable via W5500) -> WiFi may be switched off");
+      webLog("[Net] LAN verified: MQTT broker reachable");
+    }
+    return;   // err != 0 (refused/unreachable) -> next attempt
+  }
+
+  if (nowMs - s_probeSince >= PROBE_TIMEOUT_MS) {
+    probeClose();   // attempt timed out -> next attempt
+  }
 }
 
 // ---- mDNS (re)start ------------------------------------------------------
@@ -143,6 +275,8 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
     case ARDUINO_EVENT_ETH_DISCONNECTED:
       s_ethLinkUp = false;
       s_ethHasIP = false;
+      s_lanVerified = false;      // connectivity must be re-proven after a flap
+      s_probeActive = false;      // loop() closes the socket on the next round
       Serial.println("[Net] W5500 link DOWN");
       webLog("[Net] W5500 link DOWN");
       // Do NOT switch to WiFi immediately. Start the debounce timer; loop()
@@ -155,6 +289,8 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
     case ARDUINO_EVENT_ETH_STOP:
       s_ethLinkUp = false;
       s_ethHasIP = false;
+      s_lanVerified = false;
+      s_probeActive = false;
       Serial.println("[Net] event: ETH_STOP");
       break;
     case ARDUINO_EVENT_WIFI_STA_START:
@@ -213,6 +349,13 @@ void begin(const char *hostname) {
 bool loop() {
   const unsigned long nowMs = millis();
 
+  // LAN verification driver: whenever the LAN has an IP but has not yet proven
+  // end-to-end connectivity, run the MQTT broker probe (non-blocking). WiFi is only
+  // switched off once this sets s_lanVerified.
+  if (s_lanMode && s_ethHasIP && !s_lanVerified) {
+    lanVerifyService(nowMs);
+  }
+
   // LAN-first boot phase: wait for link/IP, start WiFi fallback if deadline passes.
   if (s_lanMode && s_state == NetState::LAN && s_lanDeadline != 0) {
     if (s_ethHasIP) {
@@ -230,8 +373,10 @@ bool loop() {
     return false;   // still waiting for LAN during first attempt
   }
 
-  // In LAN state: make sure WiFi is fully off (RF silence, clean separation).
-  if (s_state == NetState::LAN && WiFi.getMode() != WIFI_OFF) {
+  // In LAN state: make sure WiFi is fully off (RF silence, clean separation) —
+  // but only once the LAN has been verified (MQTT broker reachable). Before that, WiFi may
+  // still be the only working uplink and must stay alive.
+  if (s_state == NetState::LAN && s_lanVerified && WiFi.getMode() != WIFI_OFF) {
     stopWifi();
   }
 
@@ -246,9 +391,12 @@ bool loop() {
     startWifi();
   }
 
-  // LAN recovered while on WiFi fallback: switch back to LAN and turn WiFi off.
-  if (s_lanMode && s_state == NetState::LAN_WIFI_FALLBACK && s_ethHasIP) {
-    Serial.println("[Net] LAN available while on WiFi -> switching back to LAN");
+  // LAN recovered while on WiFi fallback: switch back to LAN and turn WiFi
+  // off — but ONLY after the LAN has been verified end-to-end (MQTT broker probe).
+  // Until then the WiFi fallback stays up as the working uplink.
+  if (s_lanMode && s_state == NetState::LAN_WIFI_FALLBACK && s_ethHasIP && s_lanVerified) {
+    Serial.println("[Net] LAN verified while on WiFi -> switching back to LAN, WiFi OFF");
+    webLog("[Net] LAN verified -> switching back from WiFi, WiFi OFF");
     s_state = NetState::LAN;
     s_lanDownSince = 0;
     stopWifi();
@@ -324,6 +472,7 @@ void fillStatus(JsonVariant v) {
   v["netIP"]      = activeIP();
   v["ethLinkUp"]  = s_ethLinkUp;
   v["ethHasIP"]   = (bool)s_ethHasIP;
+  v["lanVerified"] = s_lanVerified;
   v["lanDhcp"]    = LAN_DHCP;
   v["lanIP"]      = LAN_IP;
   v["lanGw"]      = LAN_GW;
