@@ -494,42 +494,46 @@ void tickSample(int powerdraw, int wattneeded, int solarpower,
 }
 
 size_t saveNow() {
-  if (s_count_short == 0 && s_count_long == 0) return 0;
-  ensurePartition();
-  Preferences p;
-  if (!p.begin(NVS_NAMESPACE, /*ro*/ false, NVS_PARTITION)) return 0;
-  
-  p.putUInt("schema", SCHEMA_VERSION);
-  p.putUInt("cnt_s", (uint32_t)s_count_short);
-  p.putUInt("idx_s", (uint32_t)s_index_short);
-  p.putUInt("cnt_l", (uint32_t)s_count_long);
-  p.putUInt("idx_l", (uint32_t)s_index_long);
-  
+  // Scratch buffers are static: saveNow() is also called from the
+  // esp_http_server task (reboot/config/OTA handlers) whose stack is only
+  // 4 KB — two large stack arrays (1440 B + 1920 B) would overflow it.
+  // s_mux is held for the whole save so the loop and httpd tasks never use
+  // the shared buffers concurrently.
+  static uint8_t scratch_short[CHUNK_SAMPLES_SHORT * sizeof(Sample)];
+  static uint8_t scratch_long[CHUNK_SAMPLES_LONG * sizeof(Sample)];
+
+  histLock();
   size_t total = 0;
-  
-  // Save short-term data
-  uint8_t scratch_short[CHUNK_SAMPLES_SHORT * sizeof(Sample)];
-  for (size_t c = 0; c < NUM_CHUNKS_SHORT; c++) {
-    histLock();
-    memcpy(scratch_short, &s_buf_short[c * CHUNK_SAMPLES_SHORT], sizeof(scratch_short));
-    histUnlock();
-    char key[8];
-    snprintf(key, sizeof(key), "ds%u", (unsigned)c);
-    total += p.putBytes(key, scratch_short, sizeof(scratch_short));
+  if (s_count_short != 0 || s_count_long != 0) {
+    ensurePartition();
+    Preferences p;
+    if (p.begin(NVS_NAMESPACE, /*ro*/ false, NVS_PARTITION)) {
+      p.putUInt("schema", SCHEMA_VERSION);
+      p.putUInt("cnt_s", (uint32_t)s_count_short);
+      p.putUInt("idx_s", (uint32_t)s_index_short);
+      p.putUInt("cnt_l", (uint32_t)s_count_long);
+      p.putUInt("idx_l", (uint32_t)s_index_long);
+
+      // Save short-term data
+      for (size_t c = 0; c < NUM_CHUNKS_SHORT; c++) {
+        memcpy(scratch_short, &s_buf_short[c * CHUNK_SAMPLES_SHORT], sizeof(scratch_short));
+        char key[8];
+        snprintf(key, sizeof(key), "ds%u", (unsigned)c);
+        total += p.putBytes(key, scratch_short, sizeof(scratch_short));
+      }
+
+      // Save long-term data
+      for (size_t c = 0; c < NUM_CHUNKS_LONG; c++) {
+        memcpy(scratch_long, &s_buf_long[c * CHUNK_SAMPLES_LONG], sizeof(scratch_long));
+        char key[8];
+        snprintf(key, sizeof(key), "dl%u", (unsigned)c);
+        total += p.putBytes(key, scratch_long, sizeof(scratch_long));
+      }
+
+      p.end();
+    }
   }
-  
-  // Save long-term data
-  uint8_t scratch_long[CHUNK_SAMPLES_LONG * sizeof(Sample)];
-  for (size_t c = 0; c < NUM_CHUNKS_LONG; c++) {
-    histLock();
-    memcpy(scratch_long, &s_buf_long[c * CHUNK_SAMPLES_LONG], sizeof(scratch_long));
-    histUnlock();
-    char key[8];
-    snprintf(key, sizeof(key), "dl%u", (unsigned)c);
-    total += p.putBytes(key, scratch_long, sizeof(scratch_long));
-  }
-  
-  p.end();
+  histUnlock();
   return total;
 }
 

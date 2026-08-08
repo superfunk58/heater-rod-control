@@ -17,6 +17,7 @@
 #include <LittleFS.h>         // Web UI assets
 #include <time.h>             // NTP-based time for history timestamps
 #include <Preferences.h>      // NVS for persistent reboot counter
+#include <esp_system.h>       // esp_reset_reason() for boot diagnostics
 #include <cstring>
 
 // Persistent reboot counter (NVS) + boot wall-clock epoch (set once NTP syncs).
@@ -44,6 +45,7 @@ void MQTT_connect();
 void sendupdate(bool force = false);
 void applyDAC(int value, unsigned long now);
 void drainService();
+extern int pendingDACoutput;  // defined next to applyDAC() below
 
 const int numValues = 17;
 double wattValues[17] = { 0, 0, 4, 7, 35, 55, 61, 97, 186, 356, 526, 978, 1241, 1306, 1330, 1352, 1367};
@@ -625,15 +627,22 @@ static void tickVolatility(int rawPD, unsigned long nowMs) {
 }
 
 void failsafe_off() {
+    // Only touch the I2C DAC when the output is actually non-zero: this
+    // function is called on EVERY loop iteration during a network/MQTT outage,
+    // and hammering a (possibly wedged) I2C bus with identical writes can stall
+    // the loop. pendingDACoutput must also be cleared, otherwise the deferred
+    // retry in loop() would re-apply a stale non-zero value once.
+    const bool dacNeedsWrite = (DACoutput != 0 || pendingDACoutput > 0);
     DACoutput = 0;
     wattneeded = 0;
     daccommandValueinterpolated = 0;
+    pendingDACoutput = -1;
     heating = false;
     pumpautocontrolled = false;
     // pumpmanualpower intentionally NOT reset: manual on/off via button/MQTT survives MQTT loss
     heatingStoppedAt = 0;       // Nachlauf unterdrücken
     cyclePumpActive = false;    // Zyklus abbrechen
-    GP8413.setDACOutVoltage(0, 0);
+    if (dacNeedsWrite) GP8413.setDACOutVoltage(0, 0);
     digitalWrite(PUMP_PIN, pumpmanualpower ? HIGH : LOW);  // respect manual state
 }
 
@@ -685,6 +694,31 @@ void setup() {
     webLog("[Boot] Reboot #%u", s_rebootCount);
   }
 
+  // Log the reset reason so unexpected reboots (panic/WDT/brownout) are
+  // identifiable after the fact. Persisted in NVS so it also survives into
+  // the web log when the serial console is not attached.
+  {
+    const esp_reset_reason_t rr = esp_reset_reason();
+    const char *rrStr = "unknown";
+    switch (rr) {
+      case ESP_RST_POWERON:   rrStr = "power-on"; break;
+      case ESP_RST_SW:        rrStr = "software (ESP.restart)"; break;
+      case ESP_RST_PANIC:     rrStr = "PANIC/exception"; break;
+      case ESP_RST_INT_WDT:   rrStr = "interrupt watchdog"; break;
+      case ESP_RST_TASK_WDT:  rrStr = "task watchdog"; break;
+      case ESP_RST_WDT:       rrStr = "other watchdog"; break;
+      case ESP_RST_BROWNOUT:  rrStr = "BROWNOUT (supply voltage dip!)"; break;
+      case ESP_RST_SDIO:      rrStr = "SDIO"; break;
+      default: break;
+    }
+    webLog("[Boot] Reset reason: %d (%s)", (int)rr, rrStr);
+    Preferences sys;
+    if (sys.begin("sys", /*readOnly*/ false)) {
+      sys.putUInt("lastReset", (uint32_t)rr);
+      sys.end();
+    }
+  }
+
   // Load persisted settings from NVS FIRST so ONEWIRE_PIN reflects user choice
   // before we initialise the OneWire bus.
   ConfigStore::load();
@@ -715,6 +749,10 @@ void setup() {
   // Default buffer (256 B) is too small for the ~1.5 KB status JSON. Pool
   // size must fit topic + payload; 2048 B leaves comfortable headroom.
   mqttClient.setBufferSize(2048);
+  // PubSubClient::connect() busy-waits for CONNACK up to socketTimeout (default
+  // 15 s) without yield() — a zombie broker (accepts TCP, never answers) would
+  // stall the loop past the 5 s task watchdog. Cap it at 3 s.
+  mqttClient.setSocketTimeout(3);
 
   ArduinoOTA.setHostname("Heizstabsteuerung");
   ArduinoOTA.onStart([]() {
@@ -760,6 +798,10 @@ void setup() {
   webLog("[Boot] NTP configured, DAC init...");
   GP8413.begin();
   GP8413.setDACOutRange(GP8413.eOutputRange10V);
+  // Unconditional DAC zero at boot: a warm reboot (ESP.restart/WDT) leaves the
+  // GP8413 output latched, and the rate-limited failsafe_off() below would skip
+  // the write because DACoutput (RAM) is already 0.
+  GP8413.setDACOutVoltage(0, 0);
   pinMode(PUMP_PIN, OUTPUT);
   failsafe_off();
 
@@ -863,9 +905,25 @@ void loop() {
   // (~750 ms with IRQs off) drop OTA WiFi packets and abort the upload.
   ArduinoOTA.handle();
 
-  // Skip ALL blocking work while OTA upload in progress (flag set in onStart).
+  // Skip heavy work while an OTA upload is in progress (flag set in onStart /
+  // first HTTP upload chunk), but KEEP the safety path alive: without it the
+  // heater would run unsupervised at its last DAC value for the whole upload.
   extern bool webserver_pauseSSE;
   if (webserver_pauseSSE) {
+    unsigned long nowMs = millis();
+    // Last known temps are fine here: a boiler heats < 1 C/min at ~1.4 kW, and
+    // avoiding OneWire transactions keeps the OTA WiFi stream undisturbed.
+    float tBoil = TempSensors::getBoilerC();
+    float tHrod = TempSensors::getHeaterRodC();
+    bool overTemp = false;
+    if (MAX_BOILER_TEMP_C > 0 && tBoil > -50.0f && tBoil < 150.0f && tBoil >= MAX_BOILER_TEMP_C) overTemp = true;
+    if (MAX_HEATER_ROD_TEMP_C > 0 && tHrod > -50.0f && tHrod < 150.0f && tHrod >= MAX_HEATER_ROD_TEMP_C) overTemp = true;
+    // Meter goes stale ~10 s into any upload (MQTT not serviced) -> shut down.
+    bool staleMeter = (lastPowerDrawUpdate == 0) || (nowMs - lastPowerDrawUpdate > POWERDRAW_STALE_MS);
+    if (heating && (overTemp || staleMeter)) {
+      failsafe_off();
+      webLog("[OTA] safety shutdown during upload (%s)", overTemp ? "over-temp" : "stale meter");
+    }
     delay(1);
     return;
   }

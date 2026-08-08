@@ -10,8 +10,10 @@
 // Sensor-Zuweisung erfolgt über NVS (Namespace "temp"); UI listet alle gefundenen
 // ROMs mit Live-Temperatur und erlaubt das Mapping pro Rolle.
 //
-// Lese-Pattern: non-blocking. tick() ruft alle 3s requestTemperatures() und
-// liest 800ms später die Werte aus, ohne den Loop zu blockieren.
+// Lese-Pattern: non-blocking. tick() ruft alle 5s requestTemperatures() und
+// liest 250ms später die Werte aus, ohne den Loop zu blockieren.
+// Kein automatischer Rescan zur Laufzeit: Bus-Enumeration nur beim Boot
+// oder manuell per UI-Button (requestRescan()).
 // ============================================================================
 #pragma once
 

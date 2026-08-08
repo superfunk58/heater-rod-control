@@ -10,13 +10,16 @@ namespace TempSensors {
 // ----- Konfiguration -----
 static constexpr uint32_t REQUEST_INTERVAL_MS = 5000;   // alle 5s ein neuer Read
 static constexpr uint32_t CONVERSION_WAIT_MS  = 250;    // 10-bit DS18B20 needs 187.5ms; 250ms margin
-static constexpr uint32_t RESCAN_INTERVAL_MS  = 10000;  // auto-rescan every 10s if sensors missing
 static constexpr uint8_t  MAX_FAIL_STREAK     = 3;      // declare sensor lost after 3 consecutive fails
 static constexpr uint8_t  BUS_RESET_FAILS     = 5;      // trigger bus reset after 5 consecutive fails
 static constexpr uint32_t BUS_RESET_DELAY_MS  = 1000;   // delay after bus reset
 static constexpr uint32_t ONEWIRE_TIMEOUT_MS  = 500;    // timeout for OneWire operations
 static constexpr float    T_MIN_VALID         = -10.0f;
 static constexpr float    T_MAX_VALID         = 100.0f;
+// 85.0 C is the DS18B20 power-on scratchpad default: before the first
+// conversion after a reset completes, every read returns exactly 85.0.
+// Treat it as a failed read so it can't pollute history or trip over-temp.
+static constexpr float    T_POWER_ON_DEFAULT  = 85.0f;
 static constexpr const char *NVS_NS           = "temp";
 
 // ----- State -----
@@ -36,7 +39,6 @@ static float s_outletLast = NAN;
 static float s_hrodLast   = NAN;
 
 static uint32_t s_lastReadMs = 0;
-static uint32_t s_lastRescanMs = 0;
 static uint8_t  s_failStreak[MAX_SENSORS] = {0};
 static uint8_t  s_busFailStreak = 0;        // consecutive bus-level failures
 static uint32_t s_busResetMs = 0;           // timestamp of last bus reset
@@ -93,15 +95,16 @@ uint64_t romFromHex(const char *hex) {
 static void resetBus() {
   if (!s_wire) return;
   webLog("[Temp] Bus RESET triggered (fail streak=%u)", s_busFailStreak);
-  s_wire->reset();
+  // reset() returns 0 when NO sensor answers the presence pulse (bus held
+  // low, wiring fault, missing pull-up). Log it — this distinguishes a
+  // locked-up bus from a physically disconnected one.
+  const uint8_t presence = s_wire->reset();
+  if (!presence) webLog("[Temp] WARNING: no presence pulse after reset (bus dead?)");
   s_busResetMs = millis();
   s_busResetPending = true;
   s_busFailStreak = 0;
   // Clear all sensor failure streaks
   for (uint8_t i = 0; i < MAX_SENSORS; i++) s_failStreak[i] = 0;
-  // Force an immediate rescan after the recovery delay: the bus reset may have
-  // re-enumerated sensors, so rebuilding the ROM list quickly helps recovery.
-  s_lastRescanMs = 0;
 }
 
 // ===== NVS-Persistenz =======================================================
@@ -158,7 +161,8 @@ static bool readSensorByRomSafe(uint64_t rom, float &out) {
 
     // Preserve the raw value for logging even if this attempt fails.
     out = t;
-    if (t == DEVICE_DISCONNECTED_C || t < T_MIN_VALID || t > T_MAX_VALID) {
+    if (t == DEVICE_DISCONNECTED_C || t == T_POWER_ON_DEFAULT ||
+        t < T_MIN_VALID || t > T_MAX_VALID) {
       if (attempt == 0) {
         delayMicroseconds(100);  // tiny bus settle before retry
         continue;
@@ -177,9 +181,25 @@ void begin(uint8_t pin) {
   if (s_dt)   { delete s_dt;   s_dt   = nullptr; }
   if (s_wire) { delete s_wire; s_wire = nullptr; }
   s_count = 0;
+  // Clear all runtime state too: begin() can be re-called (pin change from
+  // settings) and must not inherit fail streaks or a pending bus reset.
+  memset(s_failStreak, 0, sizeof(s_failStreak));
+  s_busFailStreak = 0;
+  s_busResetPending = false;
+  s_rescanReq = false;
+  for (uint8_t i = 0; i < MAX_SENSORS; i++) s_vals[i] = NAN;
+  s_boilerLast = s_inletLast = s_outletLast = s_hrodLast = NAN;
 
   s_wire = new OneWire(pin);
   s_dt   = new DallasTemperature(s_wire);
+
+  // Bus recovery before the first scan: a warm reboot (panic/WDT) can leave a
+  // sensor mid-transaction holding the bus low, so the very first search finds
+  // nothing. Extra reset pulses + settle time release it.
+  s_wire->reset();
+  delay(10);
+  s_wire->reset();
+  delay(10);
 
   s_dt->begin();
   s_dt->setResolution(10);            // 10-bit = 187.5ms conversion, faster + more stable
@@ -187,23 +207,33 @@ void begin(uint8_t pin) {
   webLog("[Temp] DallasTemperature library init done (async mode)");
   loadMapping();
 
-  // Initial scan
-  uint8_t cnt = s_dt->getDeviceCount();
-  webLog("[Temp] getDeviceCount() = %d", cnt);
-  for (uint8_t i = 0; i < cnt && s_count < MAX_SENSORS; i++) {
-    uint8_t addr[8];
-    if (s_dt->getAddress(addr, i)) {
-      if (addr[0] == 0x28) {
-        s_roms[s_count] = romFromBytes(addr);
-        s_vals[s_count] = NAN;
-        char hex[24]; romToHex(s_roms[s_count], hex);
-        webLog("[Temp]  Sensor[%d] ROM=%s", s_count, hex);
-        s_count++;
+  // Initial scan. Up to 2 attempts: if the bus was still settling (or a sensor
+  // was mid-transaction at reboot), the first search can find nothing while a
+  // second one succeeds. Boot-time only — no runtime auto-rescan.
+  for (uint8_t attempt = 0; attempt < 2 && s_count == 0; attempt++) {
+    if (attempt > 0) {
+      webLog("[Temp] Boot scan found 0 sensors, retrying after bus reset");
+      s_wire->reset();
+      delay(50);
+      s_dt->begin();
+    }
+    uint8_t cnt = s_dt->getDeviceCount();
+    webLog("[Temp] getDeviceCount() = %d", cnt);
+    for (uint8_t i = 0; i < cnt && s_count < MAX_SENSORS; i++) {
+      uint8_t addr[8];
+      if (s_dt->getAddress(addr, i)) {
+        if (addr[0] == 0x28) {
+          s_roms[s_count] = romFromBytes(addr);
+          s_vals[s_count] = NAN;
+          char hex[24]; romToHex(s_roms[s_count], hex);
+          webLog("[Temp]  Sensor[%d] ROM=%s", s_count, hex);
+          s_count++;
+        } else {
+          webLog("[Temp]  Skipping non-DS18B20 (family=%02X)", addr[0]);
+        }
       } else {
-        webLog("[Temp]  Skipping non-DS18B20 (family=%02X)", addr[0]);
+        webLog("[Temp]  getAddress(%d) FAILED", i);
       }
-    } else {
-      webLog("[Temp]  getAddress(%d) FAILED", i);
     }
   }
   webLog("[Temp] Scan complete: %u DS18B20 sensor(s)", (unsigned)s_count);
@@ -228,9 +258,16 @@ void tick() {
     }
     s_busResetPending = false;
     webLog("[Temp] Bus recovery complete, resuming reads");
+    // Restart the conversion cycle cleanly: after a reset the scratchpads
+    // contain the 85.0 power-on default, so request a FRESH conversion now
+    // instead of letting a stale WAITING state read garbage immediately.
+    s_dt->requestTemperatures();
+    s_convState = ConvState::WAITING;
+    s_convStartMs = millis();
+    return;
   }
 
-  if (s_count == 0) return;  // silent: no sensors configured
+  if (s_count == 0) return;  // no sensors found; only boot scan or manual rescan re-enumerates
 
   uint32_t now = millis();
 
@@ -250,8 +287,7 @@ void tick() {
       break;  // fall through to read results
   }
 
-  // Read all known sensors by ROM address. Track failure streaks for auto-rescan.
-  bool anySensorLost = false;
+  // Read all known sensors by ROM address. Track failure streaks for bus reset.
   uint8_t totalFails = 0;
   for (uint8_t i = 0; i < s_count && i < MAX_SENSORS; i++) {
     float t = NAN;  // readSensorByRomSafe may fail without writing (no driver)
@@ -263,13 +299,19 @@ void tick() {
         s_failStreak[i] = 0;
       }
     } else {
-      s_vals[i] = NAN;
-      if (++s_failStreak[i] >= MAX_FAIL_STREAK) {
-        anySensorLost = true;
-      }
       totalFails++;
-      if (s_failStreak[i] == 1) {
-        webLog("[Temp] Sensor %d FAIL (streak=%d, raw=%.2f)", i, s_failStreak[i], t);
+      const uint8_t streak = ++s_failStreak[i];
+      if (streak == 1) {
+        webLog("[Temp] Sensor %d FAIL (streak=%d, raw=%.2f)", i, streak, t);
+      }
+      if (streak >= MAX_FAIL_STREAK) {
+        // Sensor declared lost only now: keep the last good value during the
+        // first MAX_FAIL_STREAK-1 transient fails so a single glitch doesn't
+        // flicker the UI/history to null.
+        if (!isnan(s_vals[i])) {
+          webLog("[Temp] Sensor %d declared LOST after %d fails", i, streak);
+          s_vals[i] = NAN;
+        }
       }
     }
   }
@@ -285,12 +327,9 @@ void tick() {
     s_busFailStreak = 0;  // reset bus fail streak if at least one sensor OK
   }
 
-  // Auto-rescan if all sensors are lost (bus may have reset / wiring issue)
-  if (anySensorLost && (now - s_lastRescanMs >= RESCAN_INTERVAL_MS)) {
-    s_lastRescanMs = now;
-    webLog("[Temp] Auto-rescan triggered (sensors lost)");
-    rescan();
-  }
+  // No automatic rescan: if sensors are lost, only a manual rescan (UI button)
+  // or a reboot re-enumerates the bus. Bus resets above still run — they fix
+  // transient lockups without re-enumerating.
 
   // Map to roles
   s_boilerLast = NAN; s_inletLast = NAN; s_outletLast = NAN; s_hrodLast = NAN;
@@ -363,7 +402,8 @@ void rescan() {
       romToBytes(roms[i], addr);
       char hex[24]; romToHex(roms[i], hex);
       float t = s_dt->getTempC(addr);
-      if (t == DEVICE_DISCONNECTED_C || t < T_MIN_VALID || t > T_MAX_VALID) {
+      if (t == DEVICE_DISCONNECTED_C || t == T_POWER_ON_DEFAULT ||
+          t < T_MIN_VALID || t > T_MAX_VALID) {
         vals[i] = NAN;
         webLog("[Temp]  Rescan read FAIL[%d] ROM=%s", i, hex);
       } else {
@@ -378,6 +418,12 @@ void rescan() {
   for (uint8_t i = 0; i < count; i++) { s_roms[i] = roms[i]; s_vals[i] = vals[i]; }
   s_count = count;
   portEXIT_CRITICAL(&s_mux);
+
+  // Restart the conversion state machine cleanly: rescan() did its own
+  // blocking conversion, so a pending WAITING state would read a stale
+  // scratchpad. Next regular read happens after REQUEST_INTERVAL_MS.
+  s_convState = ConvState::IDLE;
+  s_lastReadMs = millis();
 }
 
 uint64_t boilerRom()    { return s_boilerRom;  }

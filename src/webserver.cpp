@@ -199,7 +199,9 @@ static esp_err_t handleStatus(PsychicRequest *req) {
   if (xSemaphoreTake(s_statusMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
     return req->reply(503, "application/json", "{\"error\":\"busy\"}");
   }
-  char snapshot[STATUS_PAYLOAD_CAP];
+  // Static: 3 KB on the 4 KB httpd task stack would overflow it. Safe because
+  // all handlers are serialized on the single esp_http_server task.
+  static char snapshot[STATUS_PAYLOAD_CAP];
   memcpy(snapshot, s_statusPayload, sizeof(snapshot));
   xSemaphoreGive(s_statusMutex);
   return req->reply(200, "application/json", snapshot);
@@ -424,8 +426,16 @@ static esp_err_t handleConfig(PsychicRequest *req) {
   }
   if (!doc["onewire_pin"].isNull()) {
     int n = doc["onewire_pin"];
-    // Exclude input-only (34-39) and flash SPI (6-11) pins
+    // Exclude input-only (34-39), flash SPI (6-11), UART0 (1,3), boot-strapping
+    // pins (0,2,12) and pins already used by other hardware: 13 = drain relay,
+    // 23 = pump, 21/22 = I2C DAC, 4/16/17/18/19/32 = W5500 SPI (net_manager.h).
+    // A bad pin is persisted to NVS and only applies at the NEXT boot — GPIO12
+    // would prevent the device from booting at all.
+    static const uint8_t forbidden[] = {0, 1, 2, 3, 4, 12, 13, 16, 17, 18, 19, 21, 22, 23, 32};
     bool usable = (n >= 0 && n <= 39) && !(n >= 6 && n <= 11) && !(n >= 34 && n <= 39);
+    for (size_t i = 0; i < sizeof(forbidden); i++) {
+      if (n == forbidden[i]) { usable = false; break; }
+    }
     if (usable) {
       local.hasOnewirePin = true;
       local.onewirePin = n;
@@ -560,7 +570,9 @@ static esp_err_t handleTempScan(PsychicRequest *req) {
     vTaskDelay(pdMS_TO_TICKS(50));
     if (!TempSensors::rescanPending()) break;
   }
-  TempSensors::Found list[TempSensors::MAX_SENSORS];
+  // Static: together with the 2 KB output buffer below this would overflow the
+  // 4 KB httpd task stack. Safe: handlers are serialized on the httpd task.
+  static TempSensors::Found list[TempSensors::MAX_SENSORS];
   const uint8_t listCount = TempSensors::scanList(list, TempSensors::MAX_SENSORS);
   s_httpArena.reset();
   JsonDocument doc(&s_httpArena);
@@ -571,7 +583,7 @@ static esp_err_t handleTempScan(PsychicRequest *req) {
     if (list[k].current_c > -50.0f && list[k].current_c < 150.0f) obj["current_c"] = round(list[k].current_c * 10.0f) / 10.0f;
     else obj["current_c"] = nullptr;
   }
-  char out[2048];
+  static char out[2048];  // static: 2 KB stack buffer would overflow httpd task
   serializeJson(doc, out, sizeof(out));
   return req->reply(200, "application/json", out);
 }
@@ -701,6 +713,9 @@ void webserver_begin() {
   s_begun = true;
 
   if (!s_statusMutex) s_statusMutex = xSemaphoreCreateMutex();
+  // Default httpd stack is only 4 KB; several handlers build/serialize JSON
+  // responses. 6 KB gives comfortable margin (RAM is plentiful).
+  server.config.stack_size       = 6144;
   server.config.max_uri_handlers = 20;
   server.config.max_open_sockets   = 7;
   server.maxUploadSize = 3 * 1024 * 1024;
