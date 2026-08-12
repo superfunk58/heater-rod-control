@@ -240,11 +240,16 @@ static uint32_t crc32(const char *data, size_t len) {
   return ~crc;
 }
 
-// Adaptive correction: learn the actual DAC-to-Watt relationship
-// Tracks cumulative error to adjust future interpolation
-float dacCorrectionFactor = 1.0f;  // Multiplier for interpolated watt values (1.0 = no correction)
+// Adaptive correction: learns the ratio between requested and actual heater
+// power output. The spline table maps wattneeded → DAC, but mains voltage
+// variation (P ~ V²) and manufacturing tolerance shift the actual power.
+// dacCorrectionFactor scales wattneeded BEFORE spline lookup so the feedforward
+// converges on the true plant response, leaving less work for the P controller.
+//   factor > 1.0 → table under-delivers (ask for more power to compensate)
+//   factor < 1.0 → table over-delivers  (ask for less)
+float dacCorrectionFactor = 1.0f;
 unsigned long lastCorrectionUpdate = 0;
-const unsigned long CORRECTION_UPDATE_INTERVAL = 30000;  // Update every 30 seconds when stable
+const unsigned long CORRECTION_UPDATE_INTERVAL = 30000;  // 30s when stable
 
 // millis() of the last successful NTP UDP probe (0 = never since boot).
 // Set by wifiHealthCheck(); read by sendupdate() to expose the age in the UI.
@@ -1097,10 +1102,11 @@ void loop() {
           // Calculate required power, ensuring it's at least MIN_POWER_THRESHOLD
           wattneeded = max(MIN_POWER_THRESHOLD, min(powerToConsume, MAX_HEATING_POWER));
         
-        // Calculate DAC value using interpolation
+        // Calculate DAC value using interpolation, scaled by the learned
+        // correction factor (compensates for mains voltage / plant variation).
         daccommandValueinterpolated = int(Interpolation::CatmullSpline(
-          wattValues, daccommandValues, numValues, wattneeded));
-        
+          wattValues, daccommandValues, numValues, wattneeded * dacCorrectionFactor));
+
         // Ensure value is within valid range
         int maxDAC = (int)daccommandValues[numValues-1];
         DACoutput = min(daccommandValueinterpolated, maxDAC);
@@ -1149,9 +1155,9 @@ void loop() {
           wattneeded = newWattNeeded;
           
           daccommandValueinterpolated = int(Interpolation::CatmullSpline(
-            wattValues, daccommandValues, numValues, wattneeded));
-          
-          int maxDAC = (int)daccommandValues[numValues-1];   
+            wattValues, daccommandValues, numValues, wattneeded * dacCorrectionFactor));
+
+          int maxDAC = (int)daccommandValues[numValues-1];
           DACoutput = min(daccommandValueinterpolated, maxDAC);
           
           // Apply DAC value with rate limiting
@@ -1166,15 +1172,19 @@ void loop() {
           calculationBackoffMs = min(calculationBackoffMs * 2, CALCULATION_BACKOFF_MAX);
           lastCalculationTime = currentTime;
           
-          // Adaptive correction: learn the actual DAC-to-Watt relationship
-          // When system is stable (small power error), adjust correction factor
-          if (abs(delta) < 20 && (currentTime - lastCorrectionUpdate) > CORRECTION_UPDATE_INTERVAL) {
-            // System is stable and close to target. Adjust correction factor.
-            // If delta is small positive, we're slightly over-consuming (interpolation is optimistic)
-            // If delta is small negative, we're under-consuming (interpolation is pessimistic)
-            float adjustment = 1.0f + (delta / (float)wattneeded * 0.01f);  // 1% adjustment per 1W error
-            dacCorrectionFactor = dacCorrectionFactor * 0.95f + adjustment * 0.05f;  // Slow exponential moving average
-            dacCorrectionFactor = max(0.8f, min(1.2f, dacCorrectionFactor));  // Clamp to ±20%
+          // Adaptive correction: when the system is stable (small grid error)
+          // and the P controller has converged, learn the systematic offset
+          // between the spline table's predicted power and the actual output.
+          //   delta > 0 → under-consuming → table under-delivers → increase factor
+          //   delta < 0 → over-consuming  → table over-delivers  → decrease factor
+          // The adjustment is delta/wattneeded (the relative error), smoothed by
+          // an EMA (α=0.05) so it converges over ~15 min of stable operation.
+          // Clamped to ±20% — covers 230V mains variation (P ~ V², ±10% V → ±20% P).
+          if (abs(delta) < 20 && wattneeded > 50 &&
+              (currentTime - lastCorrectionUpdate) > CORRECTION_UPDATE_INTERVAL) {
+            float adjustment = 1.0f + (float)delta / (float)wattneeded;
+            dacCorrectionFactor = dacCorrectionFactor * 0.95f + adjustment * 0.05f;
+            dacCorrectionFactor = max(0.8f, min(1.2f, dacCorrectionFactor));
             lastCorrectionUpdate = currentTime;
           }
         }
