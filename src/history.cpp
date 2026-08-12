@@ -36,6 +36,13 @@ static SemaphoreHandle_t s_mux = nullptr;
 static inline void histLock()   { if (s_mux) xSemaphoreTake(s_mux, portMAX_DELAY); }
 static inline void histUnlock() { if (s_mux) xSemaphoreGive(s_mux); }
 
+// Separate mutex to serialize concurrent saveNow() calls. The static scratch
+// buffers in saveNow() are shared; without this, an httpd-task saveNow() (from
+// handleConfig netChanged) could overwrite the loop task's scratch mid-save.
+// This mutex is held for the entire save while s_mux is only held briefly per
+// chunk copy — so tickSample() still runs during NVS flash writes.
+static SemaphoreHandle_t s_saveMutex = nullptr;
+
 // Zeit-gewichtetes Mitteln an/aus. Bei false: Momentanwert-Snapshot pro Intervall.
 static bool s_averaging = true;
 void setAveragingEnabled(bool enabled) { s_averaging = enabled; }
@@ -109,6 +116,7 @@ static bool isValidEpoch(uint32_t epoch, uint32_t nowEpoch) {
 
 void begin() {
   if (!s_mux) s_mux = xSemaphoreCreateMutex();
+  if (!s_saveMutex) s_saveMutex = xSemaphoreCreateMutex();
   ensurePartition();
   Preferences p;
   if (!p.begin(NVS_NAMESPACE, /*ro*/ true, NVS_PARTITION)) return;
@@ -500,6 +508,13 @@ size_t saveNow() {
   static uint8_t scratch_short[CHUNK_SAMPLES_SHORT * sizeof(Sample)];
   static uint8_t scratch_long[CHUNK_SAMPLES_LONG * sizeof(Sample)];
 
+  // Serialize concurrent saveNow() calls (loop task vs httpd task) to protect
+  // the shared static scratch buffers. s_mux is only held briefly per chunk
+  // copy, so tickSample() still runs during NVS flash writes.
+  if (!s_saveMutex || xSemaphoreTake(s_saveMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+    return 0;  // another save in progress; skip this one
+  }
+
   // Snapshot metadata under a brief lock, then release. NVS flash writes
   // (especially garbage collection) can take hundreds of ms; holding the
   // mutex that long blocks tickSample() on the loop task and risks a
@@ -516,11 +531,17 @@ size_t saveNow() {
   histUnlock();
 
   size_t total = 0;
-  if (snap_count_short == 0 && snap_count_long == 0) return 0;
+  if (snap_count_short == 0 && snap_count_long == 0) {
+    xSemaphoreGive(s_saveMutex);
+    return 0;
+  }
 
   ensurePartition();
   Preferences p;
-  if (!p.begin(NVS_NAMESPACE, /*ro*/ false, NVS_PARTITION)) return 0;
+  if (!p.begin(NVS_NAMESPACE, /*ro*/ false, NVS_PARTITION)) {
+    xSemaphoreGive(s_saveMutex);
+    return 0;
+  }
 
   p.putUInt("schema", SCHEMA_VERSION);
   p.putUInt("cnt_s", (uint32_t)snap_count_short);
@@ -549,6 +570,7 @@ size_t saveNow() {
   }
 
   p.end();
+  xSemaphoreGive(s_saveMutex);
   return total;
 }
 
