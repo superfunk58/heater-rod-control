@@ -93,8 +93,43 @@ volatile bool webserver_ssePushPending = false;
 bool webserver_pauseSSE = false;  // set true during OTA to reduce WiFi load
 
 // Set by webLog() whenever a new log line is stored; drained by webserver_loop()
-// so events.send() is only ever called from the loop task.
+// so events.send() is only ever called from the SSE task.
 volatile bool webserver_logPushPending = false;
+
+// ---- SSE send task ------------------------------------------------------
+// PsychicHttp's sendEvent() busy-loops on httpd_socket_send() (blocking, flags=0)
+// and retries on timeout. If a client's TCP buffer is full (background tab, slow
+// network), this can block for seconds. Running events.send() on the loop task
+// means a single slow SSE client stalls regulation, drain timer, temp sensors,
+// and MQTT — the entire firmware freezes.
+//
+// Fix: a dedicated SSE task does all events.send() calls. The loop task copies
+// the payload into a shared buffer and notifies the SSE task (non-blocking). If
+// the SSE task is still busy, the update is dropped — the 2s telemetry heartbeat
+// re-syncs the UI automatically.
+static TaskHandle_t      s_sseTask = nullptr;
+static SemaphoreHandle_t s_sseBusy = nullptr;   // available = SSE task is idle
+static char              s_sseStatusBuf[3072];   // shared payload for status sends
+static volatile bool     s_sseStatusPending = false;
+static char              s_sseLogBuf[128 + 16];   // LOG_LINE_LEN + 16 (defined below)
+static volatile bool     s_sseLogPending = false;
+
+static void sseSendTask(void *) {
+  while (true) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (s_sseStatusPending) {
+      s_sseStatusPending = false;
+      if (events.count() > 0)
+        events.send(s_sseStatusBuf, "status", millis());
+    }
+    if (s_sseLogPending) {
+      s_sseLogPending = false;
+      if (events.count() > 0)
+        events.send(s_sseLogBuf, "log", millis());
+    }
+    xSemaphoreGive(s_sseBusy);
+  }
+}
 
 // Deferred NVS writes: set by HTTP handlers, drained by loop() so flash writes
 // never block the httpd task or race with loop-task state.
@@ -716,6 +751,17 @@ void webserver_begin() {
   s_begun = true;
 
   if (!s_statusMutex) s_statusMutex = xSemaphoreCreateMutex();
+
+  // Create the SSE send task (pinned to core 0 alongside the httpd task so it
+  // never competes with the loop task on core 1). Stack: events.send() allocates
+  // a String on the heap, so 4 KB stack is plenty.
+  if (!s_sseBusy) {
+    s_sseBusy = xSemaphoreCreateBinary();
+    xSemaphoreGive(s_sseBusy);  // initially available (SSE task is idle)
+  }
+  if (!s_sseTask) {
+    xTaskCreatePinnedToCore(sseSendTask, "sse", 4096, nullptr, 1, &s_sseTask, 0);
+  }
   // Default httpd stack is only 4 KB; several handlers build/serialize JSON
   // responses. 6 KB gives comfortable margin (RAM is plentiful).
   server.config.stack_size       = 6144;
@@ -790,16 +836,24 @@ void webserver_broadcastStatus(const char *json) {
     memcpy(s_statusPayload, json, len);
     s_statusPayload[len] = '\0';
   }
-  if (!webserver_pauseSSE && events.count() > 0) {
-    events.send(json, "status", millis());
+  // Offload SSE send to the dedicated task so a slow client can never block
+  // the loop task. If the SSE task is still busy, drop this update — the 2s
+  // telemetry heartbeat will re-sync the UI.
+  if (!webserver_pauseSSE && events.count() > 0 && s_sseBusy) {
+    if (xSemaphoreTake(s_sseBusy, 0) == pdTRUE) {
+      strncpy(s_sseStatusBuf, json, sizeof(s_sseStatusBuf) - 1);
+      s_sseStatusBuf[sizeof(s_sseStatusBuf) - 1] = '\0';
+      s_sseStatusPending = true;
+      xTaskNotifyGive(s_sseTask);
+    }
   }
 }
 
 void webserver_broadcastPowerFast(int powerdraw, int powerToConsume, int powerDrawAge) {
   // Stack-only, no heap, no JSON library — absolute minimum latency.
   // Rate-limit to 1 Hz: powerdraw MQTT messages may arrive every second, but
-  // sending to all SSE clients every second can block the loop task if a client
-  // is slow. 1 Hz is plenty for the UI power gauge.
+  // sending to all SSE clients every second can overload slow clients. 1 Hz is
+  // plenty for the UI power gauge.
   static unsigned long s_lastFastPush = 0;
   const unsigned long now = millis();
   if (now - s_lastFastPush < 1000) return;
@@ -809,8 +863,13 @@ void webserver_broadcastPowerFast(int powerdraw, int powerToConsume, int powerDr
   int len = snprintf(buf, sizeof(buf),
     "{\"Powerdraw\":%d,\"powerToConsume\":%d,\"powerDrawAge\":%d}",
     powerdraw, powerToConsume, powerDrawAge);
-  if (len > 0 && len < (int)sizeof(buf) && !webserver_pauseSSE && events.count() > 0) {
-    events.send(buf, "status", millis());
+  if (len > 0 && len < (int)sizeof(buf) && !webserver_pauseSSE && events.count() > 0 && s_sseBusy) {
+    if (xSemaphoreTake(s_sseBusy, 0) == pdTRUE) {
+      strncpy(s_sseStatusBuf, buf, sizeof(s_sseStatusBuf) - 1);
+      s_sseStatusBuf[sizeof(s_sseStatusBuf) - 1] = '\0';
+      s_sseStatusPending = true;
+      xTaskNotifyGive(s_sseTask);
+    }
   }
 }
 
@@ -837,17 +896,19 @@ void webserver_loop() {
            webserver_getSseClientCount());
   }
 
-  // Drain pending SSE log push. events.send() is only ever called here, from
-  // the loop task. Send the most recently stored log line.
+  // Drain pending SSE log push. Offloaded to the SSE task so events.send()
+  // can never block the loop task.
   if (webserver_logPushPending && !webserver_pauseSSE) {
     webserver_logPushPending = false;
     if (s_logMutex && xSemaphoreTake(s_logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
       uint8_t idx = (s_logHead + LOG_MAX_LINES - 1) % LOG_MAX_LINES;
-      char json[LOG_LINE_LEN + 16];
-      int n = snprintf(json, sizeof(json), "{\"log\":\"%s\"}", s_logBuf[idx]);
+      int n = snprintf(s_sseLogBuf, sizeof(s_sseLogBuf), "{\"log\":\"%s\"}", s_logBuf[idx]);
       xSemaphoreGive(s_logMutex);
-      if (n > 0 && n < (int)sizeof(json) && events.count() > 0) {
-        events.send(json, "log", millis());
+      if (n > 0 && n < (int)sizeof(s_sseLogBuf) && events.count() > 0 && s_sseBusy) {
+        if (xSemaphoreTake(s_sseBusy, 0) == pdTRUE) {
+          s_sseLogPending = true;
+          xTaskNotifyGive(s_sseTask);
+        }
       }
     }
   }
