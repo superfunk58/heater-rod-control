@@ -293,10 +293,6 @@ Sensor anfassen → der Wert in der Liste steigt → so identifizieren.
 <div class="hint" style="margin-bottom:12px;font-size:12px;color:#94a3b8;">
 Relais schaltet für gewählte Dauer ein, dann automatisch aus. Manuell abbrechbar.
 </div>
-<div class="grid" style="grid-template-columns:1fr 1fr">
-<div class="m"><div class="ml">Status</div><div id="vDrainStatus" class="mv">&mdash;</div></div>
-<div class="m"><div class="ml">Verbleibend</div><div id="vDrainRemaining" class="mv">&mdash;</div></div>
-</div>
 <div class="row" style="margin-top:14px;gap:12px">
 <button id="bDrain1s" type="button" class="bg blg" style="flex:1;font-size:18px;padding:16px">1 Sekunde</button>
 <button id="bDrain2s" type="button" class="bg blg" style="flex:1;font-size:18px;padding:16px">2 Sekunden</button>
@@ -585,29 +581,18 @@ function render(s) {
   }
   // Drain relay status
   if (s.drainActive !== undefined) {
-    const statusEl = $('vDrainStatus');
-    const remainEl = $('vDrainRemaining');
     const btn1s = $('bDrain1s');
     const btn2s = $('bDrain2s');
     const btn3s = $('bDrain3s');
     const btn10s = $('bDrain10s');
     const btnOff = $('bDrainOff');
     if (s.drainActive) {
-      statusEl.textContent = 'AKTIV';
-      statusEl.style.color = '#4ade80';
-      const rem = Math.max(0, Number(s.drainRemaining) || 0);
-      remainEl.textContent = rem.toFixed(1) + ' s';
-      remainEl.style.color = '#38bdf8';
       btn1s.disabled = true;
       btn2s.disabled = true;
       btn3s.disabled = true;
       btn10s.disabled = true;
       btnOff.disabled = false;
     } else {
-      statusEl.textContent = 'INAKTIV';
-      statusEl.style.color = '#94a3b8';
-      remainEl.textContent = '—';
-      remainEl.style.color = '#94a3b8';
       btn1s.disabled = false;
       btn2s.disabled = false;
       btn3s.disabled = false;
