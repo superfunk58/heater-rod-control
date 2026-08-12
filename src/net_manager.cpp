@@ -65,9 +65,10 @@ static uint8_t       s_probeAttempts  = 0;
 static unsigned long s_probeSince     = 0;    // millis() when current connect started
 static unsigned long s_probeNextStart = 0;    // backoff after a failed probe round
 
-static const uint8_t       PROBE_MAX_ATTEMPTS = 5;
-static const unsigned long PROBE_TIMEOUT_MS   = 3000;   // per connect attempt
-static const unsigned long PROBE_RETRY_MS     = 60000;  // after a failed round
+static const uint8_t       PROBE_MAX_ATTEMPTS = 3;
+static const unsigned long PROBE_TIMEOUT_MS   = 2000;   // per connect attempt
+static const unsigned long PROBE_RETRY_MS     = 30000;  // after a failed round
+static const unsigned long LIVENESS_INTERVAL_MS = 30000; // re-probe interval when verified
 
 // Liveness re-verification: even a verified LAN is re-probed periodically.
 // A wedged W5500 keeps PHY link + IP (no events fire) but passes no traffic;
@@ -76,6 +77,15 @@ static const unsigned long PROBE_RETRY_MS     = 60000;  // after a failed round
 static unsigned long s_lastVerifyOkMs     = 0;
 static uint8_t       s_livenessFailRounds = 0;
 static const uint8_t LIVENESS_MAX_FAIL_ROUNDS = 3;
+
+// W5500 wedge recovery: before falling back to WiFi, try a full W5500 restart
+// (hardware reset + driver re-init). If MAX restarts don't recover the chip,
+// then fall back to WiFi. While on WiFi fallback, periodically retry the W5500
+// restart so LAN is restored automatically once the chip recovers.
+static uint8_t       s_w5500ResetAttempts = 0;
+static const uint8_t W5500_MAX_RESET_ATTEMPTS = 2;
+static unsigned long s_w5500RecoveryAttemptMs = 0;
+static const unsigned long W5500_RECOVERY_INTERVAL_MS = 120000;  // 2 min between recovery attempts on WiFi fallback
 
 // Format an IPAddress as "a.b.c.d" without heap Strings (IPAddress::toString()
 // allocates; used on the 2 s status path and in network event handlers).
@@ -194,6 +204,43 @@ static void lanVerifyService(unsigned long nowMs) {
   if (nowMs - s_probeSince >= PROBE_TIMEOUT_MS) {
     probeClose();   // attempt timed out -> next attempt
   }
+}
+
+// ---- W5500 full restart -------------------------------------------------
+// Forward declaration: restartW5500() is defined here but calls startEthernet()
+// which is defined further below.
+static void startEthernet();
+
+// Hardware-reset the W5500 via the RST pin, then re-init the ESP-IDF ETH
+// driver (ETH.end + ETH.begin). This recovers from a wedged chip where SPI
+// communication has stalled or internal state is corrupt. The link will
+// re-negotiate and events (ETH_CONNECTED, ETH_GOT_IP) will fire normally.
+// Total blocking time: ~160 ms (well under the 5 s task watchdog).
+static void restartW5500() {
+  Serial.println("[Net] W5500 full restart (HW reset + driver re-init)");
+  webLog("[Net] W5500 full restart (HW reset + driver re-init)");
+
+  // Clear state — events will set these again when the link comes back.
+  s_ethHasIP     = false;
+  s_ethLinkUp    = false;
+  s_lanVerified  = false;
+  s_probeActive  = false;
+  probeClose();
+
+  // Hardware reset: RST low for 10 ms, then high. The W5500 datasheet
+  // specifies a minimum 10 us reset pulse; 10 ms is generous.
+  pinMode(W5500_RST, OUTPUT);
+  digitalWrite(W5500_RST, LOW);
+  delay(10);
+  digitalWrite(W5500_RST, HIGH);
+  delay(50);   // W5500 needs ~50 ms after reset before SPI is responsive
+
+  // Full driver re-init: tear down the esp_netif + ETH driver, then bring
+  // it back up. This re-writes MAC registers, restarts DHCP/static config,
+  // and re-registers the netif — something a bare hardware reset can't do.
+  ETH.end();
+  delay(100);  // let ESP-IDF fully clean up before re-init
+  startEthernet();
 }
 
 // ---- mDNS (re)start ------------------------------------------------------
@@ -379,7 +426,7 @@ bool loop() {
   // Periodic liveness re-probe: clear the verified flag once per interval so
   // the probe above runs again. Detects a wedged W5500 despite up link/IP.
   if (s_lanMode && s_state == NetState::LAN && s_lanVerified &&
-      (long)(nowMs - s_lastVerifyOkMs) >= (long)PROBE_RETRY_MS) {
+      (long)(nowMs - s_lastVerifyOkMs) >= (long)LIVENESS_INTERVAL_MS) {
     s_lanVerified = false;
   }
 
@@ -426,19 +473,49 @@ bool loop() {
     webLog("[Net] LAN verified -> switching back from WiFi, WiFi OFF");
     s_state = NetState::LAN;
     s_lanDownSince = 0;
+    s_w5500ResetAttempts = 0;
+    s_w5500RecoveryAttemptMs = 0;
     stopWifi();
   }
 
   // Liveness escalation: LAN still has link/IP but repeated broker probes
-  // failed (e.g. wedged W5500). Fall back to WiFi; the verification logic
-  // above switches back to LAN automatically once the probe succeeds again.
+  // failed (e.g. wedged W5500). Try a full W5500 restart first — if the chip
+  // recovers, we stay on Ethernet without needing WiFi at all. Only after
+  // MAX restart attempts fail do we fall back to WiFi.
   if (s_lanMode && s_state == NetState::LAN &&
       s_livenessFailRounds >= LIVENESS_MAX_FAIL_ROUNDS) {
-    Serial.println("[Net] LAN liveness FAILED repeatedly -> WiFi fallback (W5500 wedged?)");
-    webLog("[Net] LAN liveness failed -> WiFi fallback (W5500 wedge?)");
-    s_state = NetState::LAN_WIFI_FALLBACK;
-    s_livenessFailRounds = 0;
-    startWifi();
+    if (s_w5500ResetAttempts < W5500_MAX_RESET_ATTEMPTS) {
+      s_w5500ResetAttempts++;
+      Serial.printf("[Net] LAN liveness failed -> W5500 restart %u/%u\n",
+                    s_w5500ResetAttempts, W5500_MAX_RESET_ATTEMPTS);
+      webLog("[Net] LAN liveness failed -> W5500 restart %u/%u",
+             s_w5500ResetAttempts, W5500_MAX_RESET_ATTEMPTS);
+      restartW5500();
+      s_livenessFailRounds = 0;
+      s_lanDeadline = nowMs + 15000;  // wait up to 15 s for link/IP after restart
+    } else {
+      Serial.println("[Net] W5500 restarts exhausted -> WiFi fallback");
+      webLog("[Net] W5500 restarts exhausted -> WiFi fallback");
+      s_state = NetState::LAN_WIFI_FALLBACK;
+      s_livenessFailRounds = 0;
+      s_w5500ResetAttempts = 0;
+      s_w5500RecoveryAttemptMs = nowMs;  // start recovery timer
+      startWifi();
+    }
+  }
+
+  // Active W5500 recovery while on WiFi fallback: the W5500 may have been
+  // wedged temporarily. Every 2 minutes, try a full restart so LAN is
+  // restored automatically once the chip recovers. The existing
+  // LAN_WIFI_FALLBACK -> LAN switch logic (above) handles the transition
+  // once the W5500 gets an IP and passes verification.
+  if (s_lanMode && s_state == NetState::LAN_WIFI_FALLBACK &&
+      (s_w5500RecoveryAttemptMs == 0 ||
+       (nowMs - s_w5500RecoveryAttemptMs) >= W5500_RECOVERY_INTERVAL_MS)) {
+    s_w5500RecoveryAttemptMs = nowMs;
+    Serial.println("[Net] WiFi fallback: attempting W5500 recovery");
+    webLog("[Net] WiFi fallback: attempting W5500 recovery");
+    restartW5500();
   }
 
   // WiFi active states
