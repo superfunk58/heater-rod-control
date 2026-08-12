@@ -589,6 +589,9 @@ void MQTT_connect() {
 
   // Attempt connection. Non-blocking: try once per 30s interval.
   // Credentials come from secrets.h (same as the previous Adafruit setup).
+  // client.setTimeout(2) limits TCP connect to 2s; PubSubClient adds a
+  // fixed 500ms CONNACK wait, so worst case is ~2.5s — well under the
+  // ~5s task watchdog.
   bool ok = mqttClient.connect("Heizstabsteuerung", AIO_USERNAME, AIO_KEY);
   if (ok) {
     digitalWrite(STATUS_LED, STATUS_LED_ON);
@@ -1261,6 +1264,19 @@ void loop() {
   if (webserver_configPending) {
     webserver_configPending = false;
     applyPendingConfig();
+  }
+
+  // Drain deferred NVS save request from httpd task (handleCmd).
+  if (webserver_configSavePending) {
+    webserver_configSavePending = false;
+    ConfigStore::save();
+  }
+
+  // Drain deferred energy reset from httpd task (handleEnergyReset).
+  // Runs on the loop task so Energy::tick() can't race with the reset.
+  if (webserver_energyResetPending) {
+    webserver_energyResetPending = false;
+    Energy::resetAll();
   }
 
   // HTTP handlers set this flag when they mutate state; we drain it once

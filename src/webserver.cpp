@@ -11,9 +11,7 @@
 //   GET  /events        -> SSE stream, named event "status" (real-time updates)
 
 #include "webserver.h"
-#include "config_store.h"
 #include "history.h"
-#include "energy.h"
 #include "temp_sensors.h"
 #include "json_arena.h"
 #include <Update.h>
@@ -97,6 +95,11 @@ bool webserver_pauseSSE = false;  // set true during OTA to reduce WiFi load
 // Set by webLog() whenever a new log line is stored; drained by webserver_loop()
 // so events.send() is only ever called from the loop task.
 volatile bool webserver_logPushPending = false;
+
+// Deferred NVS writes: set by HTTP handlers, drained by loop() so flash writes
+// never block the httpd task or race with loop-task state.
+volatile bool webserver_configSavePending = false;
+volatile bool webserver_energyResetPending = false;
 
 // Pending configuration changes set by handleConfig (httpd task) and applied
 // in main.cpp loop() to keep all global state mutations on the loop task.
@@ -225,7 +228,7 @@ static esp_err_t handleCmd(PsychicRequest *req) {
   else if (!strcmp(cmd, "drain_off"))    { drainCancelReq  = true;  changed = true; }
   else { return req->reply(400, "text/plain", "unknown cmd"); }
 
-  if (persist) ConfigStore::save();
+  if (persist) webserver_configSavePending = true;  // deferred to loop task
   if (changed) webserver_ssePushPending = true;
   return req->reply(200, "text/plain", "ok");
 }
@@ -615,23 +618,23 @@ static esp_err_t handleTempConfigGet(PsychicRequest *req) {
 static esp_err_t handleTempAssign(PsychicRequest *req) {
   bool any = false;
   if (req->hasParam("boiler_rom")) {
-    const String &v = req->getParam("boiler_rom")->value();
-    TempSensors::assignBoiler(v.length() ? TempSensors::romFromHex(v.c_str()) : 0);
+    const char *v = req->getParam("boiler_rom")->value().c_str();
+    TempSensors::assignBoiler(v[0] ? TempSensors::romFromHex(v) : 0);
     any = true;
   }
   if (req->hasParam("inlet_rom")) {
-    const String &v = req->getParam("inlet_rom")->value();
-    TempSensors::assignInlet(v.length() ? TempSensors::romFromHex(v.c_str()) : 0);
+    const char *v = req->getParam("inlet_rom")->value().c_str();
+    TempSensors::assignInlet(v[0] ? TempSensors::romFromHex(v) : 0);
     any = true;
   }
   if (req->hasParam("outlet_rom")) {
-    const String &v = req->getParam("outlet_rom")->value();
-    TempSensors::assignOutlet(v.length() ? TempSensors::romFromHex(v.c_str()) : 0);
+    const char *v = req->getParam("outlet_rom")->value().c_str();
+    TempSensors::assignOutlet(v[0] ? TempSensors::romFromHex(v) : 0);
     any = true;
   }
   if (req->hasParam("hrod_rom")) {
-    const String &v = req->getParam("hrod_rom")->value();
-    TempSensors::assignHeaterRod(v.length() ? TempSensors::romFromHex(v.c_str()) : 0);
+    const char *v = req->getParam("hrod_rom")->value().c_str();
+    TempSensors::assignHeaterRod(v[0] ? TempSensors::romFromHex(v) : 0);
     any = true;
   }
   if (!any) return req->reply(400, "text/plain", "no fields");
@@ -641,7 +644,7 @@ static esp_err_t handleTempAssign(PsychicRequest *req) {
 
 // POST /api/energy/reset -> alle Energie-Zähler löschen
 static esp_err_t handleEnergyReset(PsychicRequest *req) {
-  Energy::resetAll();
+  webserver_energyResetPending = true;  // deferred to loop task (avoids race with Energy::tick)
   webserver_ssePushPending = true;
   return req->reply(200, "text/plain", "reset");
 }

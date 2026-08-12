@@ -28,6 +28,14 @@ extern volatile bool webserver_ssePushPending;
 // loop task.
 extern volatile bool webserver_logPushPending;
 
+// Set by HTTP handlers when ConfigStore::save() is needed; drained by loop()
+// so NVS writes stay on the loop task (avoids blocking httpd + cross-task races).
+extern volatile bool webserver_configSavePending;
+
+// Set by HTTP handler when Energy::resetAll() is requested; drained by loop()
+// so the reset + NVS write stays on the loop task (avoids race with Energy::tick()).
+extern volatile bool webserver_energyResetPending;
+
 // Pending configuration changes set by HTTP handlers and applied in loop()
 // to avoid cross-task modification of String/numeric globals.
 struct PendingConfig {
