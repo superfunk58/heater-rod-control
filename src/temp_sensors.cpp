@@ -48,6 +48,10 @@ static volatile bool s_rescanReq = false;  // set by HTTP task, serviced in tick
 // Mutex for thread-safe access to sensor values from HTTP handlers
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
+// Deferred assignment state (set by httpd task, drained by loop task in tick())
+volatile bool     g_tempAssignPending = false;
+PendingAssign     g_tempPendingAssign;
+
 // Non-blocking conversion state machine
 enum class ConvState : uint8_t { IDLE, WAITING };
 static ConvState s_convState = ConvState::IDLE;
@@ -244,6 +248,22 @@ void begin(uint8_t pin) {
 void tick() {
   if (!s_dt) return;
 
+  // Drain deferred sensor assignments from the httpd task (handleTempAssign).
+  // uint64_t writes + NVS save must happen on the loop task to avoid torn reads
+  // and blocking flash writes from the httpd task.
+  if (g_tempAssignPending) {
+    g_tempAssignPending = false;
+    portENTER_CRITICAL(&s_mux);
+    if (g_tempPendingAssign.hasBoiler) s_boilerRom  = g_tempPendingAssign.boilerRom;
+    if (g_tempPendingAssign.hasInlet ) s_inletRom   = g_tempPendingAssign.inletRom;
+    if (g_tempPendingAssign.hasOutlet) s_outletRom  = g_tempPendingAssign.outletRom;
+    if (g_tempPendingAssign.hasHrod  ) s_hrodRom    = g_tempPendingAssign.hrodRom;
+    portEXIT_CRITICAL(&s_mux);
+    g_tempPendingAssign = PendingAssign();  // clear for next time
+    saveMapping();
+    webLog("[Temp] Sensor assignment applied (deferred from httpd)");
+  }
+
   // Service a rescan requested from another task (e.g. HTTP /api/temp/scan).
   // Done here so all OneWire bus access + array mutation stays on the loop task.
   if (s_rescanReq) {
@@ -426,14 +446,19 @@ void rescan() {
   s_lastReadMs = millis();
 }
 
-uint64_t boilerRom()    { return s_boilerRom;  }
-uint64_t inletRom()     { return s_inletRom;   }
-uint64_t outletRom()    { return s_outletRom;  }
-uint64_t heaterRodRom() { return s_hrodRom;    }
+// Thread-safe ROM getters: uint64_t is 8 bytes on a 32-bit CPU, so an
+// unsynchronized read can see a torn value if another task writes mid-read.
+// portENTER_CRITICAL is a brief spinlock-disable — sub-microsecond for a copy.
+uint64_t boilerRom()    { portENTER_CRITICAL(&s_mux); uint64_t r = s_boilerRom;  portEXIT_CRITICAL(&s_mux); return r; }
+uint64_t inletRom()     { portENTER_CRITICAL(&s_mux); uint64_t r = s_inletRom;   portEXIT_CRITICAL(&s_mux); return r; }
+uint64_t outletRom()    { portENTER_CRITICAL(&s_mux); uint64_t r = s_outletRom;  portEXIT_CRITICAL(&s_mux); return r; }
+uint64_t heaterRodRom() { portENTER_CRITICAL(&s_mux); uint64_t r = s_hrodRom;   portEXIT_CRITICAL(&s_mux); return r; }
 
-void assignBoiler(uint64_t rom)    { s_boilerRom  = rom; saveMapping(); }
-void assignInlet (uint64_t rom)    { s_inletRom   = rom; saveMapping(); }
-void assignOutlet(uint64_t rom)    { s_outletRom  = rom; saveMapping(); }
-void assignHeaterRod(uint64_t rom) { s_hrodRom    = rom; saveMapping(); }
+// Deferred assignment: HTTP handlers call these, which set the pending struct.
+// The actual uint64_t write + NVS save happens in tick() on the loop task.
+void assignBoiler(uint64_t rom)    { g_tempPendingAssign.hasBoiler = true; g_tempPendingAssign.boilerRom = rom; g_tempAssignPending = true; }
+void assignInlet (uint64_t rom)    { g_tempPendingAssign.hasInlet  = true; g_tempPendingAssign.inletRom  = rom; g_tempAssignPending = true; }
+void assignOutlet(uint64_t rom)    { g_tempPendingAssign.hasOutlet = true; g_tempPendingAssign.outletRom = rom; g_tempAssignPending = true; }
+void assignHeaterRod(uint64_t rom) { g_tempPendingAssign.hasHrod   = true; g_tempPendingAssign.hrodRom   = rom; g_tempAssignPending = true; }
 
 }  // namespace TempSensors

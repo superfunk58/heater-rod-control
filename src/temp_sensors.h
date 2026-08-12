@@ -79,4 +79,20 @@ void assignHeaterRod(uint64_t rom);
 void romToHex(uint64_t rom, char out[24]);
 uint64_t romFromHex(const char *hex);
 
+// Deferred sensor assignment: HTTP handlers set this struct, loop() drains it
+// via tick(). This keeps uint64_t writes + NVS saves on the loop task, avoiding
+// torn reads and blocking NVS writes from the httpd task.
+struct PendingAssign {
+  bool     hasBoiler = false;
+  bool     hasInlet  = false;
+  bool     hasOutlet = false;
+  bool     hasHrod   = false;
+  uint64_t boilerRom = 0;
+  uint64_t inletRom  = 0;
+  uint64_t outletRom = 0;
+  uint64_t hrodRom   = 0;
+};
+extern volatile bool   g_tempAssignPending;
+extern PendingAssign   g_tempPendingAssign;
+
 }  // namespace TempSensors
