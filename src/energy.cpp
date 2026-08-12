@@ -131,6 +131,10 @@ void resetAll() {
   saveNow();
 }
 
+double currentWh() {
+  return s_cumulWh;
+}
+
 void fillStatus(JsonVariant doc) {
   doc["energy_current_wh"]  = (uint32_t)(s_cumulWh + 0.5);
   doc["energy_lifetime_wh"] = (uint32_t)(s_lifetimeWh + 0.5);

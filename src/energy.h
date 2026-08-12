@@ -26,6 +26,7 @@ void tickSave();          // throttled NVS persistence
 void saveNow();
 void resetAll();          // wipe everything (current + history)
 
+double currentWh();                 // current month's accumulated Wh
 void fillStatus(JsonVariant doc);   // populate energy_* fields into doc
 
 }  // namespace Energy

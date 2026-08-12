@@ -965,7 +965,7 @@ void loop() {
   // Moved before WiFi check so data is recorded even during WiFi outages.
   History::tickSample(powerdrawnumber, wattneeded, solarAcPowerValue,
                       TempSensors::getBoilerC(), TempSensors::getInletC(),
-                      NAN, TempSensors::getOutletC(), TempSensors::getHeaterRodC());
+                      (float)Energy::currentWh(), TempSensors::getOutletC(), TempSensors::getHeaterRodC());
   History::tickSave();
   Energy::tick(heating ? wattneeded : 0);
   Energy::tickSave();

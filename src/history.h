@@ -33,7 +33,7 @@ struct Sample {
   int16_t  powerdraw;  // grid power in W (negative = feed-in)
   int16_t  wattneeded; // commanded heater power in W
   int16_t  solarpower; // solar power in W (0 if not available)
-  int16_t  heater_power; // measured heater power (W)
+  int16_t  heater_power; // monthly energy counter (kWh * 10)
   int16_t  t_boiler;   // 0.1 °C; INT16_MIN = N/A  (Speicher)
   int16_t  t_inlet;    // 0.1 °C; INT16_MIN = N/A  (Zulauf, vor Heizstab)
   int16_t  t_outlet;   // 0.1 °C; INT16_MIN = N/A  (Ablauf, nach Heizstab)
