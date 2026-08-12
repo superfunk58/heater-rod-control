@@ -767,6 +767,8 @@ void webserver_begin() {
   server.config.stack_size       = 6144;
   server.config.max_uri_handlers = 20;
   server.config.max_open_sockets   = 7;
+  server.config.send_wait_timeout  = 2;   // seconds (default 5): limit SSE send block
+  server.config.lru_purge_enable   = true; // close zombie connections when out of sockets
   server.maxUploadSize = 3 * 1024 * 1024;
   server.listen(80);
 
