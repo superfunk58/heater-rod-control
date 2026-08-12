@@ -177,6 +177,7 @@ input:focus,select:focus{outline:none;border-color:#38bdf8}
 <div class="m"><div class="ml">WiFi Netzwerk</div><div id="vSsid" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">Uptime</div><div id="vUp" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">Reboots</div><div style="display:flex;gap:8px;align-items:center"><div id="vReboots" class="mv" style="font-size:13px">&mdash;</div><button id="bResetReboots" type="button" class="bm" style="padding:4px 8px;font-size:11px;border-radius:4px">Reset</button></div></div>
+<div class="m"><div class="ml">Brownouts</div><div id="vBrownouts" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">Letzter Start</div><div id="vBoot" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">Free Heap</div><div id="vHp" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">RSSI</div><div id="vRs" class="mv" style="font-size:13px">&mdash;</div></div>
@@ -459,6 +460,10 @@ function render(s) {
   if (s.wifiSSID !== undefined) $('vSsid').textContent = s.wifiSSID;
   if (s.uptime !== undefined) $('vUp').textContent = fmtUp(s.uptime);
   if (s.rebootCount !== undefined) $('vReboots').textContent = s.rebootCount;
+  if (s.brownoutCount !== undefined) {
+    $('vBrownouts').textContent = s.brownoutCount;
+    $('vBrownouts').className = 'mv ' + (s.brownoutCount > 0 ? 'r' : 'g');
+  }
   if (s.bootEpoch !== undefined) {
     $('vBoot').textContent = s.bootEpoch > 0
       ? new Date(s.bootEpoch * 1000).toLocaleString('de-DE')

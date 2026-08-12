@@ -20,17 +20,20 @@
 #include <esp_system.h>       // esp_reset_reason() for boot diagnostics
 #include <cstring>
 
-// Persistent reboot counter (NVS) + boot wall-clock epoch (set once NTP syncs).
-static uint32_t s_rebootCount = 0;
-static uint32_t s_bootEpoch   = 0;  // 0 = not yet known (NTP not synced)
+// Persistent reboot/brownout counters (NVS) + boot wall-clock epoch (set once NTP syncs).
+static uint32_t s_rebootCount   = 0;
+static uint32_t s_brownoutCount = 0;
+static uint32_t s_bootEpoch     = 0;  // 0 = not yet known (NTP not synced)
 
 void resetRebootCounter() {
   Preferences sys;
   if (sys.begin("sys", /*readOnly*/ false)) {
     sys.putUInt("reboots", 0);
+    sys.putUInt("brownouts", 0);
     sys.end();
   }
   s_rebootCount = 0;
+  s_brownoutCount = 0;
 }
 
 // MQTT connection check interval: only attempt reconnect every 30s when
@@ -292,6 +295,7 @@ void sendupdate(bool force)
   uint32_t uptimeSec = (uint32_t)(millis() / 1000);
   doc["uptime"] = uptimeSec;
   doc["rebootCount"] = s_rebootCount;
+  doc["brownoutCount"] = s_brownoutCount;
   doc["drainActive"] = drainActive;
   if (drainActive) {
     long remainingMs = (long)drainPulseMs - (long)(millis() - drainStartMs);
@@ -384,7 +388,8 @@ void sendupdate(bool force)
   // Rate-limit MQTT publish to avoid blocking the loop on every SSE update.
   // Publish failures are handled by the 30s MQTT reconnect interval; we do
   // NOT disconnect aggressively here to avoid TCP stack thrashing.
-  if (MQTT_STATUS_ENABLED && millis() - lastMqttPublishTime >= MQTT_STATUS_INTERVAL_MS) {
+  if (MQTT_STATUS_ENABLED && mqttClient.connected() &&
+      millis() - lastMqttPublishTime >= MQTT_STATUS_INTERVAL_MS) {
     mqttClient.publish(MQTT_TOPIC_STATUS, jsonBuffer);
     lastMqttPublishTime = millis();
   }
@@ -715,7 +720,18 @@ void setup() {
     Preferences sys;
     if (sys.begin("sys", /*readOnly*/ false)) {
       sys.putUInt("lastReset", (uint32_t)rr);
+      // Persistent brownout counter: a brownout means the 3.3V rail dipped
+      // below ~2.43V (supply problem, e.g. inductive load switching nearby).
+      s_brownoutCount = sys.getUInt("brownouts", 0);
+      if (rr == ESP_RST_BROWNOUT) {
+        s_brownoutCount++;
+        sys.putUInt("brownouts", s_brownoutCount);
+      }
       sys.end();
+    }
+    if (s_brownoutCount > 0) {
+      webLog("[Boot] Brownouts bisher: %u%s", s_brownoutCount,
+             (rr == ESP_RST_BROWNOUT) ? " (LETZTER RESET WAR BROWNOUT!)" : "");
     }
   }
 
@@ -796,6 +812,11 @@ void setup() {
   configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.nist.gov");
 
   webLog("[Boot] NTP configured, DAC init...");
+  // I2C bus timeout: if the SDA line is held low by the DAC (bus hang), the
+  // Wire library would block forever without a timeout, stalling the loop task
+  // and triggering a watchdog reboot. 1000 ms is generous for normal I2C
+  // transactions but short enough to avoid the ~5 s task watchdog.
+  Wire.setTimeout(1000);
   GP8413.begin();
   GP8413.setDACOutRange(GP8413.eOutputRange10V);
   // Unconditional DAC zero at boot: a warm reboot (ESP.restart/WDT) leaves the
@@ -1272,7 +1293,7 @@ void loop() {
   }
 
   // Publish drain OFF status if pending (only when MQTT is connected)
-  if (drainOffPending) {
+  if (drainOffPending && mqttClient.connected()) {
     drainOffPending = false;
     mqttClient.publish(MQTT_TOPIC_DRAIN_STATUS, "OFF");
   }

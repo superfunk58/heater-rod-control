@@ -566,8 +566,8 @@ static esp_err_t handleTempScan(PsychicRequest *req) {
   // avoid racing with tick(). Wait briefly for it to complete so the UI gets
   // fresh values, but never block the httpd task indefinitely.
   TempSensors::requestRescan();
-  for (int i = 0; i < 30; i++) {           // up to ~1.5 s
-    vTaskDelay(pdMS_TO_TICKS(50));
+  for (int i = 0; i < 25; i++) {           // up to ~500 ms (rescan takes ~200-300ms)
+    vTaskDelay(pdMS_TO_TICKS(20));
     if (!TempSensors::rescanPending()) break;
   }
   // Static: together with the 2 KB output buffer below this would overflow the
@@ -787,7 +787,7 @@ void webserver_broadcastStatus(const char *json) {
     memcpy(s_statusPayload, json, len);
     s_statusPayload[len] = '\0';
   }
-  if (!webserver_pauseSSE) {
+  if (!webserver_pauseSSE && events.count() > 0) {
     events.send(json, "status", millis());
   }
 }
@@ -806,7 +806,7 @@ void webserver_broadcastPowerFast(int powerdraw, int powerToConsume, int powerDr
   int len = snprintf(buf, sizeof(buf),
     "{\"Powerdraw\":%d,\"powerToConsume\":%d,\"powerDrawAge\":%d}",
     powerdraw, powerToConsume, powerDrawAge);
-  if (len > 0 && len < (int)sizeof(buf) && !webserver_pauseSSE) {
+  if (len > 0 && len < (int)sizeof(buf) && !webserver_pauseSSE && events.count() > 0) {
     events.send(buf, "status", millis());
   }
 }
@@ -843,7 +843,7 @@ void webserver_loop() {
       char json[LOG_LINE_LEN + 16];
       int n = snprintf(json, sizeof(json), "{\"log\":\"%s\"}", s_logBuf[idx]);
       xSemaphoreGive(s_logMutex);
-      if (n > 0 && n < (int)sizeof(json)) {
+      if (n > 0 && n < (int)sizeof(json) && events.count() > 0) {
         events.send(json, "log", millis());
       }
     }

@@ -69,6 +69,14 @@ static const uint8_t       PROBE_MAX_ATTEMPTS = 5;
 static const unsigned long PROBE_TIMEOUT_MS   = 3000;   // per connect attempt
 static const unsigned long PROBE_RETRY_MS     = 60000;  // after a failed round
 
+// Liveness re-verification: even a verified LAN is re-probed periodically.
+// A wedged W5500 keeps PHY link + IP (no events fire) but passes no traffic;
+// only an active probe detects that. After LIVENESS_MAX_FAIL_ROUNDS failed
+// rounds we escalate to the WiFi fallback.
+static unsigned long s_lastVerifyOkMs     = 0;
+static uint8_t       s_livenessFailRounds = 0;
+static const uint8_t LIVENESS_MAX_FAIL_ROUNDS = 3;
+
 // Format an IPAddress as "a.b.c.d" without heap Strings (IPAddress::toString()
 // allocates; used on the 2 s status path and in network event handlers).
 static void fmtIP(char *buf, size_t len, const IPAddress &ip) {
@@ -152,8 +160,9 @@ static void lanVerifyService(unsigned long nowMs) {
     if (s_probeAttempts >= PROBE_MAX_ATTEMPTS) {
       s_probeActive    = false;
       s_probeNextStart = nowMs + PROBE_RETRY_MS;
+      if (s_livenessFailRounds < 255) s_livenessFailRounds++;
       Serial.println("[Net] LAN verify FAILED (broker unreachable) -> keeping WiFi, retry in 60s");
-      webLog("[Net] LAN verify: broker unreachable, keeping WiFi on");
+      webLog("[Net] LAN verify: broker unreachable (fail round %u)", s_livenessFailRounds);
       return;
     }
     probeConnectStart(nowMs);   // a false return counts as a failed attempt
@@ -174,6 +183,8 @@ static void lanVerifyService(unsigned long nowMs) {
     if (err == 0) {
       s_probeActive = false;
       s_lanVerified = true;
+      s_lastVerifyOkMs     = nowMs;
+      s_livenessFailRounds = 0;
       Serial.println("[Net] LAN verified (MQTT broker reachable via W5500) -> WiFi may be switched off");
       webLog("[Net] LAN verified: MQTT broker reachable");
     }
@@ -194,6 +205,11 @@ static void restartMDNS() {
   }
 }
 
+// Deferred mDNS restart: event handlers run on the arduino_events task, where
+// MDNS.end()/begin() heap operations race with the loop task. Set a flag and
+// let loop() do the actual restart.
+static volatile bool s_mdnsRestartPending = false;
+
 // ---- WiFi bring-up -------------------------------------------------------
 static void startWifi() {
   if (WiFi.getMode() != WIFI_OFF) return; // already active
@@ -210,7 +226,6 @@ static void startWifi() {
 static void stopWifi() {
   if (WiFi.getMode() == WIFI_OFF) return; // already off
   WiFi.disconnect(true, false);  // disconnect + turn off radio, keep AP config
-  delay(50);
   WiFi.mode(WIFI_OFF);
   Serial.println("[Net] WiFi switched OFF");
   webLog("[Net] WiFi switched OFF");
@@ -269,7 +284,7 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
         Serial.printf("[Net] W5500 GOT IP %s\n", ip);
         webLog("[Net] W5500 GOT IP %s", ip);
       }
-      restartMDNS();
+      s_mdnsRestartPending = true;  // deferred to loop() — no heap ops in event handler
       s_lanDownSince = 0;   // LAN is back up -> cancel any pending fallback timer
       break;
     case ARDUINO_EVENT_ETH_DISCONNECTED:
@@ -303,12 +318,11 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
         Serial.printf("[Net] WiFi GOT IP %s\n", ip);
         webLog("[Net] WiFi GOT IP %s", ip);
       }
-      // Cache the SSID so sendupdate() never calls WiFi.SSID() (heap String).
-      {
-        String s = WiFi.SSID();
-        strlcpy(s_ssid, s.c_str(), sizeof(s_ssid));
-      }
-      restartMDNS();
+      // Cache the SSID without heap allocation: WiFi.SSID() returns a String
+      // (heap) which fragments the event-handler task. We always connect to
+      // WLAN_SSID, so use it directly.
+      strlcpy(s_ssid, WLAN_SSID, sizeof(s_ssid));
+      s_mdnsRestartPending = true;  // deferred to loop() — no heap ops in event handler
       break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       s_ssid[0] = '\0';
@@ -349,11 +363,24 @@ void begin(const char *hostname) {
 bool loop() {
   const unsigned long nowMs = millis();
 
+  // Service deferred mDNS restart from event handler (prevents heap races).
+  if (s_mdnsRestartPending) {
+    s_mdnsRestartPending = false;
+    restartMDNS();
+  }
+
   // LAN verification driver: whenever the LAN has an IP but has not yet proven
   // end-to-end connectivity, run the MQTT broker probe (non-blocking). WiFi is only
   // switched off once this sets s_lanVerified.
   if (s_lanMode && s_ethHasIP && !s_lanVerified) {
     lanVerifyService(nowMs);
+  }
+
+  // Periodic liveness re-probe: clear the verified flag once per interval so
+  // the probe above runs again. Detects a wedged W5500 despite up link/IP.
+  if (s_lanMode && s_state == NetState::LAN && s_lanVerified &&
+      (long)(nowMs - s_lastVerifyOkMs) >= (long)PROBE_RETRY_MS) {
+    s_lanVerified = false;
   }
 
   // LAN-first boot phase: wait for link/IP, start WiFi fallback if deadline passes.
@@ -402,6 +429,18 @@ bool loop() {
     stopWifi();
   }
 
+  // Liveness escalation: LAN still has link/IP but repeated broker probes
+  // failed (e.g. wedged W5500). Fall back to WiFi; the verification logic
+  // above switches back to LAN automatically once the probe succeeds again.
+  if (s_lanMode && s_state == NetState::LAN &&
+      s_livenessFailRounds >= LIVENESS_MAX_FAIL_ROUNDS) {
+    Serial.println("[Net] LAN liveness FAILED repeatedly -> WiFi fallback (W5500 wedged?)");
+    webLog("[Net] LAN liveness failed -> WiFi fallback (W5500 wedge?)");
+    s_state = NetState::LAN_WIFI_FALLBACK;
+    s_livenessFailRounds = 0;
+    startWifi();
+  }
+
   // WiFi active states
   if (s_state == NetState::WIFI || s_state == NetState::LAN_WIFI_FALLBACK) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -415,7 +454,6 @@ bool loop() {
     if (nowMs - s_wifiOutageStart > 30000) {
       Serial.println("[Net] WiFi outage > 30s, restarting WiFi");
       WiFi.disconnect();
-      delay(50);
       WiFi.begin(WLAN_SSID, WLAN_PASS);
       s_wifiOutageStart = nowMs;
       s_lastWifiReconnect = nowMs;
