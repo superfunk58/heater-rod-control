@@ -6,7 +6,7 @@
 #include <lwip/sockets.h>
 #include <errno.h>
 #include "secrets.h"     // WLAN_SSID / WLAN_PASS / AIO_SERVER / AIO_SERVERPORT
-#include "webserver.h"   // webLog()
+#include "webserver.h"   // webLog(), webserver_closeAllSseClients()
 
 // Network configuration globals (owned by main.cpp, persisted by ConfigStore).
 // Fixed-size char arrays: no heap, no fragmentation.
@@ -442,6 +442,7 @@ bool loop() {
       Serial.println("[Net] LAN first-attempt TIMEOUT -> switching to WiFi fallback");
       s_state = NetState::LAN_WIFI_FALLBACK;
       s_lanDeadline = 0;
+      webserver_closeAllSseClients();  // kill zombie SSE sockets from LAN
       startWifi();
     }
     return false;   // still waiting for LAN during first attempt
@@ -462,6 +463,7 @@ bool loop() {
     webLog("[Net] LAN down -> WiFi fallback");
     s_state = NetState::LAN_WIFI_FALLBACK;
     s_lanDownSince = 0;
+    webserver_closeAllSseClients();  // kill zombie SSE sockets from LAN
     startWifi();
   }
 
@@ -475,6 +477,7 @@ bool loop() {
     s_lanDownSince = 0;
     s_w5500ResetAttempts = 0;
     s_w5500RecoveryAttemptMs = 0;
+    webserver_closeAllSseClients();  // kill zombie SSE sockets from WiFi
     stopWifi();
   }
 
@@ -500,6 +503,7 @@ bool loop() {
       s_livenessFailRounds = 0;
       s_w5500ResetAttempts = 0;
       s_w5500RecoveryAttemptMs = nowMs;  // start recovery timer
+      webserver_closeAllSseClients();  // kill zombie SSE sockets from LAN
       startWifi();
     }
   }

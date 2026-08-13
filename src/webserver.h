@@ -88,3 +88,8 @@ void webserver_getAndClearPendingConfig(PendingConfig &out);
 
 // Get current number of active SSE clients (for diagnostics)
 int webserver_getSseClientCount();
+
+// Close all SSE clients. Called when the active network interface changes
+// (LAN↔WiFi fallback) so zombie connections from the old interface don't
+// block the SSE task or exhaust the socket pool.
+void webserver_closeAllSseClients();

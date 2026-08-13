@@ -881,6 +881,24 @@ int webserver_getSseClientCount() {
   return events.count();
 }
 
+// Close all SSE clients. Called when the active network interface changes
+// (LAN↔WiFi fallback) so zombie connections from the old interface are cleaned
+// up immediately. Without this, dead sockets block the SSE task for up to
+// send_wait_timeout (2s) each and exhaust max_open_sockets.
+void webserver_closeAllSseClients() {
+  int n = events.count();
+  if (n == 0) return;
+  webLog("[SSE] closing all %d clients (interface change)", n);
+  // Copy the client list, then close each socket via httpd_sess_trigger_close.
+  // The close callback (which removes from _clients and deletes the buddy)
+  // fires asynchronously on the httpd task. httpd_sess_trigger_close is safe
+  // to call even if the socket is already half-closed.
+  std::list<PsychicClient*> copy = events.getClientList();
+  for (PsychicClient *c : copy) {
+    if (c) c->close();
+  }
+}
+
 void webserver_loop() {
   if (rebootPending && millis() >= rebootAt) {
     ESP.restart();
