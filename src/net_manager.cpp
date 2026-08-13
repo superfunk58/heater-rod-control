@@ -16,6 +16,7 @@ extern char LAN_IP[16];
 extern char LAN_GW[16];
 extern char LAN_MASK[16];
 extern char LAN_DNS[16];
+extern volatile bool mqttInterfaceChanged;  // set on interface switch -> main.cpp force-disconnects MQTT
 
 namespace NetManager {
 
@@ -443,6 +444,7 @@ bool loop() {
       s_state = NetState::LAN_WIFI_FALLBACK;
       s_lanDeadline = 0;
       webserver_closeAllSseClients();  // kill zombie SSE sockets from LAN
+      mqttInterfaceChanged = true;       // force MQTT reconnect on new interface
       startWifi();
     }
     return false;   // still waiting for LAN during first attempt
@@ -464,6 +466,7 @@ bool loop() {
     s_state = NetState::LAN_WIFI_FALLBACK;
     s_lanDownSince = 0;
     webserver_closeAllSseClients();  // kill zombie SSE sockets from LAN
+    mqttInterfaceChanged = true;       // force MQTT reconnect on new interface
     startWifi();
   }
 
@@ -478,6 +481,7 @@ bool loop() {
     s_w5500ResetAttempts = 0;
     s_w5500RecoveryAttemptMs = 0;
     webserver_closeAllSseClients();  // kill zombie SSE sockets from WiFi
+    mqttInterfaceChanged = true;       // force MQTT reconnect on new interface
     stopWifi();
   }
 
@@ -504,6 +508,7 @@ bool loop() {
       s_w5500ResetAttempts = 0;
       s_w5500RecoveryAttemptMs = nowMs;  // start recovery timer
       webserver_closeAllSseClients();  // kill zombie SSE sockets from LAN
+      mqttInterfaceChanged = true;       // force MQTT reconnect on new interface
       startWifi();
     }
   }

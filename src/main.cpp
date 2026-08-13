@@ -42,6 +42,11 @@ void resetRebootCounter() {
 static unsigned long s_lastMqttCheckMs = 0;
 static const unsigned long MQTT_CHECK_INTERVAL_MS = 30000;
 
+// Set by NetManager when the active interface changes (LAN↔WiFi fallback).
+// Drained in loop() to force-disconnect the zombie MQTT TCP socket so
+// reconnect happens immediately instead of waiting for keepalive timeout.
+volatile bool mqttInterfaceChanged = false;
+
 // Forward-Deklarationen
 void failsafe_off();
 void MQTT_connect();
@@ -777,6 +782,11 @@ void setup() {
   // 15 s) without yield() — a zombie broker (accepts TCP, never answers) would
   // stall the loop past the 5 s task watchdog. Cap it at 3 s.
   mqttClient.setSocketTimeout(3);
+  // Keepalive: default 15 s is too aggressive — if the loop is delayed by
+  // OneWire conversions, NVS writes, or a W5500 restart (~160 ms), the broker
+  // disconnects us. 60 s gives comfortable margin while still detecting a
+  // dead broker within ~90 s (1.5x keepalive per MQTT spec).
+  mqttClient.setKeepAlive(60);
 
   ArduinoOTA.setHostname("Heizstabsteuerung");
   ArduinoOTA.onStart([]() {
@@ -976,6 +986,18 @@ void loop() {
 
   // Network manager loop: handles WiFi/LAN switching, reconnection, and state
   NetManager::loop();
+
+  // Interface changed (LAN↔WiFi): force-disconnect zombie MQTT socket and
+  // reset reconnect timer so MQTT_connect() runs on the next iteration.
+  if (mqttInterfaceChanged) {
+    mqttInterfaceChanged = false;
+    if (mqttClient.connected()) {
+      Serial.println("[MQTT] Interface changed -> force disconnect");
+      webLog("[MQTT] Interface changed -> force disconnect");
+      mqttClient.disconnect();
+    }
+    s_lastMqttCheckMs = 0;  // allow immediate reconnect
+  }
 
   // Failsafe if network or MQTT are not connected
   if (!NetManager::isOnline()) {
