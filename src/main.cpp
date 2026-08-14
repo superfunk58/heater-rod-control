@@ -924,6 +924,10 @@ void drainService() {
     drainStartMs = millis();
     webLog("[Drain] Kompressor-Entwaesserung AN (max %lus)", drainPulseMs / 1000);
     webserver_ssePushPending = true;
+    // Brief yield after relay energize: inductive load EMI can disrupt
+    // the W5500 SPI bus for a few ms. Let the Ethernet driver process
+    // any spurious link events before continuing.
+    delay(10);
   }
   // Enforce the maximum on-time: auto-return to LOW.
   if (drainActive && (millis() - drainStartMs >= drainPulseMs)) {
@@ -932,6 +936,7 @@ void drainService() {
     drainOffPending = true;
     webLog("[Drain] Kompressor-Entwaesserung AUS (auto nach %lus)", drainPulseMs / 1000);
     webserver_ssePushPending = true;
+    delay(10);
   }
 }
 
