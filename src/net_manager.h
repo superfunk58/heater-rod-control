@@ -34,6 +34,11 @@ static constexpr int W5500_CS   = 16;
 static constexpr int W5500_INT  = 4;
 static constexpr int W5500_RST  = 32;
 
+// SPI clock for W5500. Default framework value is 20 MHz, which can be
+// marginal with jumper wires or long traces. 12 MHz gives comfortable
+// timing margin while still providing plenty of throughput.
+static constexpr uint8_t W5500_SPI_FREQ_MHZ = 12;
+
 // Bring up the configured interface(s). Call ONCE in setup() AFTER
 // ConfigStore::load(). Replaces the old inline WiFi.begin() bootstrap.
 void begin(const char *hostname);

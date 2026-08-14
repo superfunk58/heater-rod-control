@@ -5,6 +5,7 @@
 #include <ESPmDNS.h>
 #include <lwip/sockets.h>
 #include <errno.h>
+#include <driver/gpio.h>
 #include "secrets.h"     // WLAN_SSID / WLAN_PASS / AIO_SERVER / AIO_SERVERPORT
 #include "webserver.h"   // webLog(), webserver_closeAllSseClients()
 
@@ -229,13 +230,15 @@ static void restartW5500() {
   s_probeActive  = false;
   probeClose();
 
-  // Hardware reset: RST low for 10 ms, then high. The W5500 datasheet
-  // specifies a minimum 10 us reset pulse; 10 ms is generous.
+  // Hardware reset: RST low for 20 ms, then high. The W5500 datasheet
+  // specifies a minimum 10 us reset pulse, but a longer pulse gives more
+  // margin with noisy supplies. After releasing reset, wait 150 ms for
+  // the internal PLL to fully stabilize before SPI traffic begins.
   pinMode(W5500_RST, OUTPUT);
   digitalWrite(W5500_RST, LOW);
-  delay(10);
+  delay(20);
   digitalWrite(W5500_RST, HIGH);
-  delay(50);   // W5500 needs ~50 ms after reset before SPI is responsive
+  delay(150);  // W5500 PLL stabilization + internal init
 
   // Full driver re-init: tear down the esp_netif + ETH driver, then bring
   // it back up. This re-writes MAC registers, restarts DHCP/static config,
@@ -282,13 +285,25 @@ static void stopWifi() {
 
 // ---- W5500 Ethernet bring-up ---------------------------------------------
 static void startEthernet() {
-  Serial.printf("[Net] W5500 init: SCLK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d\n",
-         W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_CS, W5500_INT, W5500_RST);
-  webLog("[Net] W5500 init: SCLK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d",
-         W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_CS, W5500_INT, W5500_RST);
+  Serial.printf("[Net] W5500 init: SCLK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d SPI=%uMHz\n",
+         W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_CS, W5500_INT, W5500_RST, W5500_SPI_FREQ_MHZ);
+  webLog("[Net] W5500 init: SCLK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d SPI=%uMHz",
+         W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_CS, W5500_INT, W5500_RST, W5500_SPI_FREQ_MHZ);
+  // Pre-init CS high with pull-up so no spurious SPI transactions occur
+  // before the driver claims the pin. Also set max drive strength on SPI
+  // output pins for clean edges with longer wiring.
+  pinMode(W5500_CS, OUTPUT);
+  digitalWrite(W5500_CS, HIGH);
+  gpio_set_drive_capability((gpio_num_t)W5500_CS,   GPIO_DRIVE_CAP_3);
+  gpio_set_drive_capability((gpio_num_t)W5500_SCLK, GPIO_DRIVE_CAP_3);
+  gpio_set_drive_capability((gpio_num_t)W5500_MOSI, GPIO_DRIVE_CAP_3);
+  gpio_pullup_en((gpio_num_t)W5500_CS);
+
   // Core 3.x SPI-Ethernet begin (creates the esp_netif interface).
+  // Explicit 12 MHz SPI clock for reliability (default is 20 MHz).
   if (!ETH.begin(ETH_PHY_W5500, 1, W5500_CS, W5500_INT, W5500_RST,
-                 SPI2_HOST, W5500_SCLK, W5500_MISO, W5500_MOSI)) {
+                 SPI2_HOST, W5500_SCLK, W5500_MISO, W5500_MOSI,
+                 W5500_SPI_FREQ_MHZ)) {
     Serial.println("[Net] W5500 ETH.begin() FAILED (no chip / wiring?)");
     webLog("[Net] W5500 ETH.begin() FAILED (no chip / wiring?)");
     return;
