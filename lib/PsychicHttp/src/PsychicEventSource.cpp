@@ -146,6 +146,26 @@ void PsychicEventSource::send(const char *message, const char *event, uint32_t i
   }
 }
 
+// Thread-safe count for cross-task access (loop task / SSE task).
+int PsychicEventSource::safeCount() {
+  sseListLock();
+  int n = _clients.size();
+  sseListUnlock();
+  return n;
+}
+
+// Thread-safe close-all: copy the client list under the mutex, then close
+// each socket. httpd_sess_trigger_close fires the actual closeCallback
+// asynchronously on the httpd task, which is safe.
+void PsychicEventSource::closeAll() {
+  sseListLock();
+  std::list<PsychicClient*> clientsCopy = _clients;
+  sseListUnlock();
+  for (PsychicClient *c : clientsCopy) {
+    if (c) c->close();
+  }
+}
+
 /*****************************************/
 // PsychicEventSourceClient
 /*****************************************/

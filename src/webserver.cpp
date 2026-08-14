@@ -119,12 +119,12 @@ static void sseSendTask(void *) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (s_sseStatusPending) {
       s_sseStatusPending = false;
-      if (events.count() > 0)
+      if (events.safeCount() > 0)
         events.send(s_sseStatusBuf, "status", millis());
     }
     if (s_sseLogPending) {
       s_sseLogPending = false;
-      if (events.count() > 0)
+      if (events.safeCount() > 0)
         events.send(s_sseLogBuf, "log", millis());
     }
     xSemaphoreGive(s_sseBusy);
@@ -841,7 +841,7 @@ void webserver_broadcastStatus(const char *json) {
   // Offload SSE send to the dedicated task so a slow client can never block
   // the loop task. If the SSE task is still busy, drop this update — the 2s
   // telemetry heartbeat will re-sync the UI.
-  if (!webserver_pauseSSE && events.count() > 0 && s_sseBusy) {
+  if (!webserver_pauseSSE && events.safeCount() > 0 && s_sseBusy) {
     if (xSemaphoreTake(s_sseBusy, 0) == pdTRUE) {
       strncpy(s_sseStatusBuf, json, sizeof(s_sseStatusBuf) - 1);
       s_sseStatusBuf[sizeof(s_sseStatusBuf) - 1] = '\0';
@@ -865,7 +865,7 @@ void webserver_broadcastPowerFast(int powerdraw, int powerToConsume, int powerDr
   int len = snprintf(buf, sizeof(buf),
     "{\"Powerdraw\":%d,\"powerToConsume\":%d,\"powerDrawAge\":%d}",
     powerdraw, powerToConsume, powerDrawAge);
-  if (len > 0 && len < (int)sizeof(buf) && !webserver_pauseSSE && events.count() > 0 && s_sseBusy) {
+  if (len > 0 && len < (int)sizeof(buf) && !webserver_pauseSSE && events.safeCount() > 0 && s_sseBusy) {
     if (xSemaphoreTake(s_sseBusy, 0) == pdTRUE) {
       strncpy(s_sseStatusBuf, buf, sizeof(s_sseStatusBuf) - 1);
       s_sseStatusBuf[sizeof(s_sseStatusBuf) - 1] = '\0';
@@ -878,7 +878,7 @@ void webserver_broadcastPowerFast(int powerdraw, int powerToConsume, int powerDr
 // Count active SSE clients for diagnostics — thin wrapper over PsychicHttp's
 // own client list (no custom tracking needed).
 int webserver_getSseClientCount() {
-  return events.count();
+  return events.safeCount();
 }
 
 // Close all SSE clients. Called when the active network interface changes
@@ -886,17 +886,10 @@ int webserver_getSseClientCount() {
 // up immediately. Without this, dead sockets block the SSE task for up to
 // send_wait_timeout (2s) each and exhaust max_open_sockets.
 void webserver_closeAllSseClients() {
-  int n = events.count();
+  int n = events.safeCount();
   if (n == 0) return;
   webLog("[SSE] closing all %d clients (interface change)", n);
-  // Copy the client list, then close each socket via httpd_sess_trigger_close.
-  // The close callback (which removes from _clients and deletes the buddy)
-  // fires asynchronously on the httpd task. httpd_sess_trigger_close is safe
-  // to call even if the socket is already half-closed.
-  std::list<PsychicClient*> copy = events.getClientList();
-  for (PsychicClient *c : copy) {
-    if (c) c->close();
-  }
+  events.closeAll();
 }
 
 void webserver_loop() {
@@ -924,7 +917,7 @@ void webserver_loop() {
       uint8_t idx = (s_logHead + LOG_MAX_LINES - 1) % LOG_MAX_LINES;
       int n = snprintf(s_sseLogBuf, sizeof(s_sseLogBuf), "{\"log\":\"%s\"}", s_logBuf[idx]);
       xSemaphoreGive(s_logMutex);
-      if (n > 0 && n < (int)sizeof(s_sseLogBuf) && events.count() > 0 && s_sseBusy) {
+      if (n > 0 && n < (int)sizeof(s_sseLogBuf) && events.safeCount() > 0 && s_sseBusy) {
         if (xSemaphoreTake(s_sseBusy, 0) == pdTRUE) {
           s_sseLogPending = true;
           xTaskNotifyGive(s_sseTask);

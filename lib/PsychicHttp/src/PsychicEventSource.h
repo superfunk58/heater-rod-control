@@ -69,6 +69,10 @@ class PsychicEventSource : public PsychicHandler {
     esp_err_t handleRequest(PsychicRequest *request) override final;
 
     void send(const char *message, const char *event=NULL, uint32_t id=0, uint32_t reconnect=0);
+
+    // Thread-safe variants for cross-task access (loop task / SSE task).
+    int  safeCount();     // count() under mutex
+    void closeAll();      // close every SSE client under mutex
 };
 
 class PsychicEventSourceResponse: public PsychicResponse {
