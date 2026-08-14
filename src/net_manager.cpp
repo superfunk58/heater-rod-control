@@ -5,7 +5,6 @@
 #include <ESPmDNS.h>
 #include <lwip/sockets.h>
 #include <errno.h>
-#include <driver/gpio.h>
 #include "secrets.h"     // WLAN_SSID / WLAN_PASS / AIO_SERVER / AIO_SERVERPORT
 #include "webserver.h"   // webLog(), webserver_closeAllSseClients()
 
@@ -289,16 +288,6 @@ static void startEthernet() {
          W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_CS, W5500_INT, W5500_RST, W5500_SPI_FREQ_MHZ);
   webLog("[Net] W5500 init: SCLK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d SPI=%uMHz",
          W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_CS, W5500_INT, W5500_RST, W5500_SPI_FREQ_MHZ);
-  // Pre-init CS high with pull-up so no spurious SPI transactions occur
-  // before the driver claims the pin. Also set max drive strength on SPI
-  // output pins for clean edges with longer wiring.
-  pinMode(W5500_CS, OUTPUT);
-  digitalWrite(W5500_CS, HIGH);
-  gpio_set_drive_capability((gpio_num_t)W5500_CS,   GPIO_DRIVE_CAP_3);
-  gpio_set_drive_capability((gpio_num_t)W5500_SCLK, GPIO_DRIVE_CAP_3);
-  gpio_set_drive_capability((gpio_num_t)W5500_MOSI, GPIO_DRIVE_CAP_3);
-  gpio_pullup_en((gpio_num_t)W5500_CS);
-
   // Core 3.x SPI-Ethernet begin (creates the esp_netif interface).
   // Explicit 12 MHz SPI clock for reliability (default is 20 MHz).
   if (!ETH.begin(ETH_PHY_W5500, 1, W5500_CS, W5500_INT, W5500_RST,
