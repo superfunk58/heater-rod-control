@@ -45,6 +45,7 @@ static unsigned long s_lanDownSince = 0;       // millis() when LAN link dropped
 static const unsigned long LAN_DOWN_GRACE_MS = 8000;
 
 // LAN-first boot timeout
+static const unsigned long LAN_BOOT_TIMEOUT_MS = 30000;  // 30 s for LAN DHCP/static at boot
 static unsigned long s_lanDeadline = 0;        // millis() when LAN first-attempt times out
 
 static unsigned long s_wifiOutageStart   = 0;    // start of current WiFi outage
@@ -400,7 +401,7 @@ void begin(const char *hostname) {
     WiFi.mode(WIFI_OFF);
     startEthernet();
     s_state = NetState::LAN;
-    s_lanDeadline = millis() + 15000;   // 15 s for LAN DHCP/static to come up
+    s_lanDeadline = millis() + LAN_BOOT_TIMEOUT_MS;   // 30 s for LAN DHCP/static to come up
   } else {
     Serial.println("[Net] WiFi mode: starting WiFi immediately");
     s_state = NetState::WIFI;
@@ -499,7 +500,7 @@ bool loop() {
              s_w5500ResetAttempts, W5500_MAX_RESET_ATTEMPTS);
       restartW5500();
       s_livenessFailRounds = 0;
-      s_lanDeadline = nowMs + 15000;  // wait up to 15 s for link/IP after restart
+      s_lanDeadline = nowMs + LAN_BOOT_TIMEOUT_MS;  // wait up to 30 s for link/IP after restart
     } else {
       Serial.println("[Net] W5500 restarts exhausted -> WiFi fallback");
       webLog("[Net] W5500 restarts exhausted -> WiFi fallback");
