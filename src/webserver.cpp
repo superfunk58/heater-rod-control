@@ -136,6 +136,10 @@ static void sseSendTask(void *) {
 volatile bool webserver_configSavePending = false;
 volatile bool webserver_energyResetPending = false;
 
+// Pending energy injection (set by HTTP handler, drained by loop task)
+volatile bool webserver_energyInjectPending = false;
+PendingEnergyInject webserver_pendingEnergyInject;
+
 // Pending configuration changes set by handleConfig (httpd task) and applied
 // in main.cpp loop() to keep all global state mutations on the loop task.
 static SemaphoreHandle_t s_configMutex = nullptr;
@@ -684,6 +688,38 @@ static esp_err_t handleEnergyReset(PsychicRequest *req) {
   return req->reply(200, "text/plain", "reset");
 }
 
+// POST /api/energy/inject -> inject Wh for a previous month
+// Body: {"year":2026,"month":7,"wh":12345}  (wh in Watt-hours)
+static esp_err_t handleEnergyInject(PsychicRequest *req) {
+  s_httpArena.reset();
+  JsonDocument doc(&s_httpArena);
+
+  int year = 0, month = 0, wh = 0;
+
+  if (req->contentType() == "application/json" && req->contentLength() > 0) {
+    DeserializationError err = deserializeJson(doc, req->body());
+    if (err) return req->reply(400, "text/plain", "Invalid JSON");
+    year  = doc["year"]  | 0;
+    month = doc["month"] | 0;
+    wh    = doc["wh"]    | 0;
+  } else {
+    if (req->hasParam("year"))  year  = req->getParam("year")->value().toInt();
+    if (req->hasParam("month")) month = req->getParam("month")->value().toInt();
+    if (req->hasParam("wh"))    wh    = req->getParam("wh")->value().toInt();
+  }
+
+  if (year < 2000 || year > 3000 || month < 1 || month > 12 || wh < 0)
+    return req->reply(400, "text/plain", "Invalid year/month/wh");
+
+  webserver_pendingEnergyInject.year  = (uint16_t)year;
+  webserver_pendingEnergyInject.month = (uint8_t)month;
+  webserver_pendingEnergyInject.wh    = (uint32_t)wh;
+  webserver_energyInjectPending = true;
+  webserver_ssePushPending = true;
+
+  return req->reply(200, "text/plain", "ok");
+}
+
 // POST /api/reboots/reset -> persistenten Reboot-Zähler auf 0 zurücksetzen
 static esp_err_t handleRebootsReset(PsychicRequest *req) {
   resetRebootCounter();
@@ -784,6 +820,7 @@ void webserver_begin() {
   server.on("/api/temp/config", HTTP_GET,  handleTempConfigGet);
   server.on("/api/temp/assign", HTTP_POST, handleTempAssign);
   server.on("/api/energy/reset",      HTTP_POST, handleEnergyReset);
+  server.on("/api/energy/inject",     HTTP_POST, handleEnergyInject);
   server.on("/api/reboots/reset",     HTTP_POST, handleRebootsReset);
 
   PsychicUploadHandler *firmwareUploadHandler = new PsychicUploadHandler();

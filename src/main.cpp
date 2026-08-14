@@ -1311,6 +1311,19 @@ void loop() {
     Energy::resetAll();
   }
 
+  // Drain deferred energy injection from httpd task (handleEnergyInject).
+  if (webserver_energyInjectPending) {
+    webserver_energyInjectPending = false;
+    Energy::injectPreviousMonth(
+      webserver_pendingEnergyInject.year,
+      webserver_pendingEnergyInject.month,
+      webserver_pendingEnergyInject.wh);
+    webLog("[Energy] injected %u Wh for %u-%02u",
+           webserver_pendingEnergyInject.wh,
+           webserver_pendingEnergyInject.year,
+           webserver_pendingEnergyInject.month);
+  }
+
   // HTTP handlers set this flag when they mutate state; we drain it once
   // per loop iteration so events.send() is only ever called from the loop
   // task (PoolController pattern — eliminates cross-task _clients races).

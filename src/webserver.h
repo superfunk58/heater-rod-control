@@ -36,6 +36,17 @@ extern volatile bool webserver_configSavePending;
 // so the reset + NVS write stays on the loop task (avoids race with Energy::tick()).
 extern volatile bool webserver_energyResetPending;
 
+// Pending energy injection for a previous month (set by HTTP handler, drained
+// by loop task so NVS writes don't race with Energy::tick()).
+struct PendingEnergyInject {
+  bool pending = false;
+  uint16_t year = 0;
+  uint8_t  month = 0;
+  uint32_t wh = 0;
+};
+extern volatile bool webserver_energyInjectPending;
+extern PendingEnergyInject webserver_pendingEnergyInject;
+
 // Pending configuration changes set by HTTP handlers and applied in loop()
 // to avoid cross-task modification of String/numeric globals.
 struct PendingConfig {

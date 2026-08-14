@@ -152,4 +152,34 @@ void fillStatus(JsonVariant doc) {
   }
 }
 
+bool injectPreviousMonth(uint16_t year, uint8_t month, uint32_t wh) {
+  if (year < 2000 || year > 3000 || month < 1 || month > 12) return false;
+
+  // Check if this month already exists in the ring — replace if so
+  for (size_t i = 0; i < MONTHLY_CHUNKS; i++) {
+    if (s_chunks[i].year == year && s_chunks[i].month == month) {
+      s_chunks[i].wh = wh;
+      saveNow();
+      return true;
+    }
+  }
+
+  // Find an empty slot; if none, shift left (drop oldest) and append
+  for (size_t i = 0; i < MONTHLY_CHUNKS; i++) {
+    if (s_chunks[i].year == 0) {
+      s_chunks[i].year  = year;
+      s_chunks[i].month = month;
+      s_chunks[i]._pad  = 0;
+      s_chunks[i].wh    = wh;
+      saveNow();
+      return true;
+    }
+  }
+
+  // Ring full: drop oldest, append newest
+  pushChunk(year, month, wh);
+  saveNow();
+  return true;
+}
+
 }  // namespace Energy

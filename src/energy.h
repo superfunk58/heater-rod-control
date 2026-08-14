@@ -29,4 +29,9 @@ void resetAll();          // wipe everything (current + history)
 double currentWh();                 // current month's accumulated Wh
 void fillStatus(JsonVariant doc);   // populate energy_* fields into doc
 
+// Inject or overwrite Wh for a specific past month (year+month).
+// If the month already exists in the history ring, its Wh is replaced.
+// Otherwise a new entry is appended. Returns true on success.
+bool injectPreviousMonth(uint16_t year, uint8_t month, uint32_t wh);
+
 }  // namespace Energy
