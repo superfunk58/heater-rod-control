@@ -323,6 +323,17 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
       s_ethLinkUp = true;
       Serial.println("[Net] W5500 link UP");
       webLog("[Net] W5500 link UP");
+      // Static IP: ETH.config() already set the IP before link up, but the
+      // GOT_IP event only fires for DHCP. Mark has-IP here so the boot
+      // state machine doesn't time out and fall back to WiFi.
+      if (!LAN_DHCP) {
+        s_ethHasIP = true;
+        char ip[16]; fmtIP(ip, sizeof(ip), ETH.localIP());
+        Serial.printf("[Net] W5500 static IP active %s\n", ip);
+        webLog("[Net] W5500 static IP active %s", ip);
+        s_mdnsRestartPending = true;
+        s_lanDownSince = 0;
+      }
       break;
     case ARDUINO_EVENT_ETH_GOT_IP:
     case ARDUINO_EVENT_ETH_GOT_IP6:
