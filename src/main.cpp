@@ -8,6 +8,7 @@
 #include "InterpolationLib.h"
 #include "secrets.h"          // WiFi/MQTT credentials (gitignored)
 #include "webserver.h"        // HTTP + SSE web UI
+#include "tee_print.h"        // Log (tee Serial -> webLog ring buffer)
 #include "config_store.h"     // Persistent settings (NVS Preferences)
 #include "history.h"          // Power history ring buffer (dedicated NVS partition)
 #include "energy.h"           // Heizstab Energy integrator (Wh, monthly chunks)
@@ -565,7 +566,7 @@ void MQTT_connect() {
     if (!wasConnected) {
       digitalWrite(STATUS_LED, STATUS_LED_ON);
       wasConnected = true;
-      Serial.println("[MQTT] Connected");
+      Log.println("[MQTT] Connected");
       webLog("[MQTT] Connected");
     }
     return;
@@ -583,7 +584,7 @@ void MQTT_connect() {
   // intentionally OFF, so gating on WiFi.status() would block MQTT forever.
   // The WiFiClient is a NetworkClient (Core 3.x) and routes over Ethernet too.
   if (!NetManager::isOnline()) {
-    Serial.println("[MQTT] No network, waiting...");
+    Log.println("[MQTT] No network, waiting...");
     webLog("[MQTT] No network, waiting...");
     return;
   }
@@ -593,7 +594,7 @@ void MQTT_connect() {
     mqttClient.disconnect();
     digitalWrite(STATUS_LED, STATUS_LED_OFF);
     wasConnected = false;
-    Serial.println("[MQTT] Disconnected, will retry");
+    Log.println("[MQTT] Disconnected, will retry");
     webLog("[MQTT] Disconnected");
   }
 
@@ -606,11 +607,11 @@ void MQTT_connect() {
   if (ok) {
     digitalWrite(STATUS_LED, STATUS_LED_ON);
     wasConnected = true;
-    Serial.println("[MQTT] Reconnected");
+    Log.println("[MQTT] Reconnected");
     webLog("[MQTT] Reconnected");
     mqttSubscribeAll();
   } else {
-    Serial.printf("[MQTT] Connect failed (state=%d), retry in 30s\n", mqttClient.state());
+    Log.printf("[MQTT] Connect failed (state=%d), retry in 30s\n", mqttClient.state());
     webLog("[MQTT] Connect failed (state=%d), retry in 30s", mqttClient.state());
     failsafe_off();
   }
@@ -790,7 +791,7 @@ void setup() {
 
   ArduinoOTA.setHostname("Heizstabsteuerung");
   ArduinoOTA.onStart([]() {
-    Serial.println("[OTA] Start");
+    Log.println("[OTA] Start");
     webserver_pauseSSE = true;  // stop SSE traffic during upload
     // NOTE: Do NOT call mqttClient.disconnect() here from the OTA callback.
     // PubSubClient is not reentrant-safe; disconnecting from this context
@@ -798,25 +799,25 @@ void setup() {
     // interval in loop() will naturally reconnect after OTA completes.
   });
   ArduinoOTA.onEnd([]() {
-    Serial.println("[OTA] End");
+    Log.println("[OTA] End");
     webserver_pauseSSE = false;  // resume SSE
   });
   ArduinoOTA.onError([](ota_error_t error) {
     webserver_pauseSSE = false;  // resume SSE on error
-    Serial.printf("[OTA] Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR) Serial.println("End Failed");
-    else Serial.println("Unknown");
+    Log.printf("[OTA] Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Log.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Log.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Log.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Log.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Log.println("End Failed");
+    else Log.println("Unknown");
   });
   ArduinoOTA.begin();
 
   // Mount LittleFS (web UI). format-on-fail so first boot after partition
   // change doesn't brick the UI.
   if (!LittleFS.begin(true)) {
-    Serial.println("[FS] LittleFS mount failed");
+    Log.println("[FS] LittleFS mount failed");
   }
 
   // (ConfigStore::load() already called early, before TempSensors::begin)
@@ -1021,7 +1022,7 @@ void loop() {
   if (mqttInterfaceChanged) {
     mqttInterfaceChanged = false;
     if (mqttClient.connected()) {
-      Serial.println("[MQTT] Interface changed -> force disconnect");
+      Log.println("[MQTT] Interface changed -> force disconnect");
       webLog("[MQTT] Interface changed -> force disconnect");
       mqttClient.disconnect();
     }

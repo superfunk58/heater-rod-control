@@ -297,7 +297,7 @@ Sensor anfassen → der Wert in der Liste steigt → so identifizieren.
 <div class="save-row"><button id="bTempSave" type="button" class="bg" disabled>Zuweisung speichern</button><div id="mTempSave" class="msg"></div></div>
 </div>
 
-<div class="card"><div class="title">Debug-Log</div><div id="webLog" class="weblog-wrap"></div></div>
+<div class="card"><div class="title" style="display:flex;justify-content:space-between;align-items:center">Debug-Log<button id="bCrashLog" type="button" class="bg" style="font-size:12px;padding:6px 12px;min-height:auto">Crash-Log</button></div><div id="webLog" class="weblog-wrap"></div></div>
 
 </div>
 
@@ -1297,5 +1297,25 @@ function appendWebLog(line) {
   while (w.children.length > 40) w.removeChild(w.firstChild);
   w.scrollTop = w.scrollHeight;
 }
+
+// Crash log: fetch /api/crashlog and display in the web log window
+$('bCrashLog').onclick = async () => {
+  try {
+    const r = await fetch('/api/crashlog');
+    if (!r.ok) return;
+    const text = await r.text();
+    const w = $('webLog');
+    if (!w) return;
+    w.innerHTML = '';
+    text.split('\n').forEach(line => {
+      if (!line) return;
+      const d = document.createElement('div');
+      d.className = 'weblog-line';
+      d.textContent = line;
+      w.appendChild(d);
+    });
+    w.scrollTop = 0;
+  } catch(e) { console.error(e); }
+};
 </script>
 </body></html>

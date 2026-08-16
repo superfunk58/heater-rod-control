@@ -104,3 +104,6 @@ int webserver_getSseClientCount();
 // (LAN↔WiFi fallback) so zombie connections from the old interface don't
 // block the SSE task or exhaust the socket pool.
 void webserver_closeAllSseClients();
+
+// Copy up to maxLines log entries (oldest first) into buf. Returns line count.
+size_t webserver_getLogLines(char *buf, size_t bufLen, uint8_t maxLines);

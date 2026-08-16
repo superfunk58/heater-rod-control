@@ -18,6 +18,7 @@
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <PsychicHttp.h>
+#include "tee_print.h"
 #include <cstring>
 #include <strings.h>
 
@@ -76,6 +77,9 @@ void sendupdate(bool force);
 // ---- Module state ------------------------------------------------------
 static PsychicHttpServer  server;
 static PsychicEventSource events;
+
+// Global tee printer: mirrors all output to USB Serial + webLog ring buffer.
+TeePrint Log(Serial);
 static constexpr int MAX_SSE_CLIENTS = 4;  // hard cap: each idle client still owns a LWIP socket
 static constexpr size_t STATUS_PAYLOAD_CAP = 3072;
 static char   s_statusPayload[STATUS_PAYLOAD_CAP] = "{}";
@@ -179,25 +183,51 @@ static void setUpdateError(const char *msg) {
 }
 
 // ---- Web log ring buffer (for browser console) --------------------------
-static constexpr uint8_t  LOG_MAX_LINES = 20;
+static constexpr uint8_t  LOG_MAX_LINES = 30;
 static constexpr uint16_t LOG_LINE_LEN  = 128;
 static char   s_logBuf[LOG_MAX_LINES][LOG_LINE_LEN];
 static uint8_t s_logHead = 0;
 static uint8_t s_logCount = 0;
 static SemaphoreHandle_t s_logMutex = nullptr;
 
-void webLog(const char* fmt, ...) {
-  char line[LOG_LINE_LEN];
-  va_list args;
-  va_start(args, fmt);
-  vsnprintf(line, sizeof(line), fmt, args);
-  va_end(args);
+// Dump the webLog ring buffer to LittleFS /crash.log. Called via
+// esp_register_shutdown_handler so it runs on panic/watchdog/brownout
+// reboots. Flash writes here are safe: the system is already going down.
+static void crashLogDump() {
+  if (!s_logMutex) return;
+  // Best-effort: no mutex (shutdown context), just read the ring directly.
+  File f = LittleFS.open("/crash.log", "w");
+  if (!f) return;
+  for (uint8_t i = 0; i < s_logCount; i++) {
+    uint8_t idx = (s_logHead + LOG_MAX_LINES - s_logCount + i) % LOG_MAX_LINES;
+    f.println(s_logBuf[idx]);
+  }
+  f.close();
+}
 
-  Serial.println(line);
+// Copy up to maxLines log entries into the caller's buffer (oldest first).
+// Returns the number of lines copied. Used by the /api/crashlog endpoint.
+size_t webserver_getLogLines(char *buf, size_t bufLen, uint8_t maxLines) {
+  if (!s_logMutex || !buf || bufLen == 0) return 0;
+  if (xSemaphoreTake(s_logMutex, pdMS_TO_TICKS(50)) != pdTRUE) return 0;
+  size_t pos = 0;
+  uint8_t n = s_logCount < maxLines ? s_logCount : maxLines;
+  for (uint8_t i = 0; i < n; i++) {
+    uint8_t idx = (s_logHead + LOG_MAX_LINES - s_logCount + i) % LOG_MAX_LINES;
+    size_t len = strlen(s_logBuf[idx]);
+    if (pos + len + 2 >= bufLen) break;
+    memcpy(buf + pos, s_logBuf[idx], len);
+    buf[pos + len] = '\n';
+    pos += len + 1;
+  }
+  buf[pos] = '\0';
+  xSemaphoreGive(s_logMutex);
+  return n;
+}
 
-  // The ring buffer is shared between arbitrary caller contexts (httpd task,
-  // network event handlers, MQTT callback, loop task) and the loop task that
-  // drains it. Protect writes/reads with a short-timeout mutex.
+// Store a line into the webLog ring buffer without Serial output.
+// Called by TeePrint (Log.print*) and by webLog().
+void webLogBufferLine(const char *line) {
   if (!s_logMutex) s_logMutex = xSemaphoreCreateMutex();
   if (s_logMutex && xSemaphoreTake(s_logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     strncpy(s_logBuf[s_logHead], line, LOG_LINE_LEN - 1);
@@ -206,11 +236,18 @@ void webLog(const char* fmt, ...) {
     if (s_logCount < LOG_MAX_LINES) s_logCount++;
     xSemaphoreGive(s_logMutex);
   }
-
-  // Defer SSE log send to the loop task. webLog() is called from many contexts
-  // including WiFi/Ethernet event handlers and the MQTT callback, where
-  // events.send() is not safe. webserver_loop() drains this flag.
   webserver_logPushPending = true;
+}
+
+void webLog(const char* fmt, ...) {
+  char line[LOG_LINE_LEN];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(line, sizeof(line), fmt, args);
+  va_end(args);
+
+  /*KEEP*/Log.println(line);/*KEEP*/
+  webLogBufferLine(line);
 }
 
 // Direct pointer into the request's parameter value (no String copy).
@@ -727,6 +764,34 @@ static esp_err_t handleRebootsReset(PsychicRequest *req) {
   return req->reply(200, "text/plain", "reset");
 }
 
+// GET /api/crashlog -> return crash.log from LittleFS (if present after a crash)
+//                      plus the current RAM log ring buffer.
+static esp_err_t handleCrashLog(PsychicRequest *req) {
+  static char buf[2048];
+  size_t pos = 0;
+
+  // 1. LittleFS crash.log (from last shutdown/panic)
+  if (LittleFS.exists("/crash.log")) {
+    File f = LittleFS.open("/crash.log", "r");
+    if (f) {
+      pos += snprintf(buf + pos, sizeof(buf) - pos, "=== crash.log (last shutdown) ===\n");
+      while (f.available() && pos < sizeof(buf) - 256) {
+        size_t n = f.read((uint8_t*)(buf + pos), sizeof(buf) - pos - 256);
+        if (n == 0) break;
+        pos += n;
+      }
+      f.close();
+      if (pos < sizeof(buf) - 2) buf[pos++] = '\n';
+    }
+  }
+
+  // 2. Current RAM log ring buffer
+  pos += snprintf(buf + pos, sizeof(buf) - pos, "=== RAM log (current session) ===\n");
+  webserver_getLogLines(buf + pos, sizeof(buf) - pos - 1, LOG_MAX_LINES);
+
+  return req->reply(200, "text/plain", buf);
+}
+
 static esp_err_t handleFirmwareUploadChunk(PsychicRequest *req, const String &filename, uint64_t index, uint8_t *data, size_t len, bool last) {
   (void)req;
   if (index == 0) {
@@ -806,6 +871,9 @@ void webserver_begin() {
   server.config.send_wait_timeout  = 1;   // seconds: limit SSE/httpd send block during relay EMI
   server.config.lru_purge_enable   = true; // close zombie connections when out of sockets
   server.maxUploadSize = 3 * 1024 * 1024;
+  // Register crash log dump so it runs automatically on shutdown/panic.
+  esp_register_shutdown_handler(crashLogDump);
+
   server.listen(80);
 
   // API routes registered FIRST so the static-file fallback doesn't
@@ -822,6 +890,7 @@ void webserver_begin() {
   server.on("/api/energy/reset",      HTTP_POST, handleEnergyReset);
   server.on("/api/energy/inject",     HTTP_POST, handleEnergyInject);
   server.on("/api/reboots/reset",     HTTP_POST, handleRebootsReset);
+  server.on("/api/crashlog",           HTTP_GET,  handleCrashLog);
 
   PsychicUploadHandler *firmwareUploadHandler = new PsychicUploadHandler();
   firmwareUploadHandler->onUpload(handleFirmwareUploadChunk);

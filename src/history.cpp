@@ -3,6 +3,7 @@
 
 #include "history.h"
 #include "webserver.h"
+#include "tee_print.h"
 #include "json_arena.h"
 #include <Preferences.h>
 #include <nvs_flash.h>
@@ -106,7 +107,7 @@ static void ensurePartition() {
     nvs_flash_erase_partition(NVS_PARTITION);
     err = nvs_flash_init_partition(NVS_PARTITION);
   }
-  if (err != ESP_OK) Serial.printf("[HIST] init failed: %d\n", (int)err);
+  if (err != ESP_OK) Log.printf("[HIST] init failed: %d\n", (int)err);
   done = true;
 }
 
@@ -131,7 +132,7 @@ void begin() {
   // old data in place instead of discarding it (see long-term load below).
   const bool migrateFrom10 = (schema == 10);
   if (schema != SCHEMA_VERSION && !migrateFrom10) {
-    Serial.printf("[HIST] schema %lu incompatible with %lu, resetting history\n",
+    Log.printf("[HIST] schema %lu incompatible with %lu, resetting history\n",
                   (unsigned long)schema, (unsigned long)SCHEMA_VERSION);
     webLog("[HIST] schema %lu incompatible with %lu, resetting history",
            (unsigned long)schema, (unsigned long)SCHEMA_VERSION);
@@ -146,7 +147,7 @@ void begin() {
     return;
   }
   if (migrateFrom10) {
-    Serial.println("[HIST] migrating schema 10 -> 11 (long-term 672 -> 1344, data preserved)");
+    Log.println("[HIST] migrating schema 10 -> 11 (long-term 672 -> 1344, data preserved)");
     webLog("[HIST] migrating history schema 10 -> 11 (data preserved)");
   }
 
@@ -264,7 +265,7 @@ void begin() {
     if (seed >= 1600000000) {
       struct timeval tv = { .tv_sec = (time_t)(seed + INTERVAL_SHORT_SEC), .tv_usec = 0 };
       settimeofday(&tv, nullptr);
-      Serial.printf("[HIST] no NTP at boot - clock seeded from last sample (epoch %u)\n",
+      Log.printf("[HIST] no NTP at boot - clock seeded from last sample (epoch %u)\n",
                     (unsigned)seed);
     }
   }
