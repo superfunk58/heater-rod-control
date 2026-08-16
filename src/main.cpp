@@ -216,7 +216,7 @@ static bool           s_volatileActive    = false;
 
 // Heartbeat: force a publish every N ms even if nothing changed (liveness signal)
 unsigned long lastTelemetryTime = 0;
-const unsigned long TELEMETRY_INTERVAL = 2000; // 2s heartbeat (matches Poolcontroller10)
+const unsigned long TELEMETRY_INTERVAL = 5000; // 5s heartbeat (reduced from 2s to lower heap churn)
 
 // Rate limit MQTT telemetry publish (SSE is always instant)
 unsigned long lastMqttPublishTime = 0;
@@ -941,6 +941,30 @@ void drainService() {
 }
 
 void loop() {
+  // Heap watchdog: PsychicHttp allocates/frees String objects on every HTTP
+  // request and SSE send. Over time this fragments the heap until a large
+  // contiguous allocation fails and the device crashes. Monitor free heap and
+  // restart pre-emptively before exhaustion.
+  {
+    static unsigned long s_lastHeapCheck = 0;
+    const unsigned long now = millis();
+    if (now - s_lastHeapCheck >= 10000) {  // check every 10s
+      s_lastHeapCheck = now;
+      uint32_t freeHeap = ESP.getFreeHeap();
+      uint32_t minHeap = ESP.getMinFreeHeap();
+      if (freeHeap < 12000) {
+        webLog("[Heap] CRITICAL free=%u min=%u -> saving and restarting", freeHeap, minHeap);
+        History::saveNow();
+        Energy::saveNow();
+        delay(100);
+        ESP.restart();
+      }
+      if (freeHeap < 20000) {
+        webLog("[Heap] LOW free=%u min=%u", freeHeap, minHeap);
+      }
+    }
+  }
+
   // Drain-compressor pulse: serviced first so the 3 s auto-off limit is
   // guaranteed regardless of WiFi/OTA early-returns further down.
   drainService();
