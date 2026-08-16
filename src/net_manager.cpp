@@ -214,6 +214,16 @@ static void lanVerifyService(unsigned long nowMs) {
 // which is defined further below.
 static void startEthernet();
 
+// Deferred ETH hostname set: ARDUINO_EVENT_ETH_START fires on the
+// arduino_events task. Calling ETH.setHostname() there races with
+// restartW5500() which calls ETH.end() on the loop task. Defer to loop().
+static volatile bool s_ethHostnamePending = false;
+
+// Guard: set true while restartW5500() is tearing down/re-initializing the
+// ETH driver. Event handler checks this to avoid touching ETH state during
+// a restart (the events that fire during ETH.end()/begin() are stale).
+static volatile bool s_w5500Restarting = false;
+
 // Hardware-reset the W5500 via the RST pin, then re-init the ESP-IDF ETH
 // driver (ETH.end + ETH.begin). This recovers from a wedged chip where SPI
 // communication has stalled or internal state is corrupt. The link will
@@ -222,6 +232,15 @@ static void startEthernet();
 static void restartW5500() {
   Log.println("[Net] W5500 full restart (HW reset + driver re-init)");
   webLog("[Net] W5500 full restart (HW reset + driver re-init)");
+
+  // Close all SSE clients and pause SSE: the httpd task would otherwise try
+  // to send data over sockets bound to the dead Ethernet interface, blocking
+  // for send_wait_timeout (1s) per client and risking a watchdog reboot.
+  webserver_closeAllSseClients();
+  webserver_pauseSSE = true;
+
+  // Set guard so the event handler ignores stale events during teardown.
+  s_w5500Restarting = true;
 
   // Clear state — events will set these again when the link comes back.
   s_ethHasIP     = false;
@@ -246,6 +265,12 @@ static void restartW5500() {
   ETH.end();
   delay(100);  // let ESP-IDF fully clean up before re-init
   startEthernet();
+
+  // Clear guard: events from the fresh ETH.begin() are now valid.
+  s_w5500Restarting = false;
+
+  // Resume SSE: the new interface will have a new IP; clients reconnect.
+  webserver_pauseSSE = false;
 }
 
 // ---- mDNS (re)start ------------------------------------------------------
@@ -319,10 +344,21 @@ static void startEthernet() {
 // ---- Unified network event handler ---------------------------------------
 static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
   (void)info;
+  // Ignore stale ETH events that fire during restartW5500() teardown —
+  // the driver emits ETH_STOP/ETH_DISCONNECTED during ETH.end() but the
+  // state has already been cleared by restartW5500().
+  if (s_w5500Restarting && (event == ARDUINO_EVENT_ETH_START ||
+      event == ARDUINO_EVENT_ETH_CONNECTED || event == ARDUINO_EVENT_ETH_DISCONNECTED ||
+      event == ARDUINO_EVENT_ETH_STOP || event == ARDUINO_EVENT_ETH_GOT_IP ||
+      event == ARDUINO_EVENT_ETH_GOT_IP6)) {
+    return;
+  }
   switch (event) {
     case ARDUINO_EVENT_ETH_START:
       Log.println("[Net] event: ETH_START");
-      ETH.setHostname(s_hostname);
+      // Defer ETH.setHostname() to loop(): calling it here on the events
+      // task races with restartW5500()->ETH.end() on the loop task.
+      s_ethHostnamePending = true;
       break;
     case ARDUINO_EVENT_ETH_CONNECTED:
       s_ethLinkUp = true;
@@ -432,6 +468,13 @@ bool loop() {
   if (s_mdnsRestartPending) {
     s_mdnsRestartPending = false;
     restartMDNS();
+  }
+
+  // Service deferred ETH hostname set from event handler (prevents race
+  // with restartW5500()->ETH.end() on this same task).
+  if (s_ethHostnamePending) {
+    s_ethHostnamePending = false;
+    ETH.setHostname(s_hostname);
   }
 
   // LAN verification driver: whenever the LAN has an IP but has not yet proven
