@@ -261,14 +261,17 @@ static void restartW5500() {
   ETH.end();
   delay(100);  // let ESP-IDF fully clean up before re-init
 
-  // ETH.end() in Arduino Core 3.x does NOT free the SPI bus or GPIO ISR
-  // service. Without this manual cleanup, ETH.begin() hits
-  //   "spi_bus_initialize: SPI bus already initialized"
-  //   "gpio_install_isr_service: GPIO isr service already installed"
-  // leaving the W5500 driver in an inconsistent state that can freeze
-  // the ESP on subsequent SPI transactions.
+  // ETH.end() in Arduino Core 3.x does NOT free the SPI bus. Without this
+  // manual cleanup, ETH.begin() hits "spi_bus_initialize: SPI bus already
+  // initialized" and the W5500 driver is left in an inconsistent state.
+  //
+  // Do NOT call gpio_uninstall_isr_service() here: it is a GLOBAL teardown
+  // that also removes the GPIO ISR service used by WiFi, the OneWire bus,
+  // and other peripherals. Calling it while WiFi is active (WiFi fallback
+  // recovery path) crashes the ESP32. The "gpio_install_isr_service: already
+  // installed" log from ETH.begin() is harmless — the service is already
+  // there and functional.
   spi_bus_free(SPI2_HOST);
-  gpio_uninstall_isr_service();  // safe no-op if no ISR service installed
   delay(50);
 
   startEthernet();
@@ -361,6 +364,7 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
       break;
     case ARDUINO_EVENT_ETH_CONNECTED:
       s_ethLinkUp = true;
+      s_lanDownSince = 0;   // link is back — cancel grace timer for ALL modes
       webLog("[Net] W5500 link UP");
       // Static IP: ETH.config() already set the IP before link up, but the
       // GOT_IP event only fires for DHCP. Mark has-IP here so the boot
@@ -370,7 +374,6 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
         char ip[16]; fmtIP(ip, sizeof(ip), ETH.localIP());
         webLog("[Net] W5500 static IP active %s", ip);
         s_mdnsRestartPending = true;
-        s_lanDownSince = 0;
       }
       break;
     case ARDUINO_EVENT_ETH_GOT_IP:
@@ -518,6 +521,7 @@ bool loop() {
     webLog("[Net] LAN down past grace -> starting WiFi fallback");
     s_state = NetState::LAN_WIFI_FALLBACK;
     s_lanDownSince = 0;
+    s_w5500RecoveryAttemptMs = nowMs;  // delay first W5500 recovery by 2 min
     webserver_closeAllSseClients();  // kill zombie SSE sockets from LAN
     mqttInterfaceChanged = true;       // force MQTT reconnect on new interface
     startWifi();
@@ -568,8 +572,8 @@ bool loop() {
   // LAN_WIFI_FALLBACK -> LAN switch logic (above) handles the transition
   // once the W5500 gets an IP and passes verification.
   if (s_lanMode && s_state == NetState::LAN_WIFI_FALLBACK &&
-      (s_w5500RecoveryAttemptMs == 0 ||
-       (nowMs - s_w5500RecoveryAttemptMs) >= W5500_RECOVERY_INTERVAL_MS)) {
+      s_w5500RecoveryAttemptMs != 0 &&
+      (nowMs - s_w5500RecoveryAttemptMs) >= W5500_RECOVERY_INTERVAL_MS) {
     s_w5500RecoveryAttemptMs = nowMs;
     webLog("[Net] WiFi fallback: attempting W5500 recovery");
     restartW5500();

@@ -182,4 +182,20 @@ bool injectPreviousMonth(uint16_t year, uint8_t month, uint32_t wh) {
   return true;
 }
 
+bool deleteMonth(uint16_t year, uint8_t month) {
+  for (size_t i = 0; i < MONTHLY_CHUNKS; i++) {
+    if (s_chunks[i].year == year && s_chunks[i].month == month) {
+      // Shift remaining entries left to compact the ring
+      for (size_t j = i; j + 1 < MONTHLY_CHUNKS; j++) {
+        s_chunks[j] = s_chunks[j + 1];
+      }
+      // Clear the now-freed last slot
+      s_chunks[MONTHLY_CHUNKS - 1] = MonthlyChunk{};
+      saveNow();
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace Energy

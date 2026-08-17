@@ -144,6 +144,10 @@ volatile bool webserver_energyResetPending = false;
 volatile bool webserver_energyInjectPending = false;
 PendingEnergyInject webserver_pendingEnergyInject;
 
+// Pending energy month deletion (set by HTTP handler, drained by loop task)
+volatile bool webserver_energyDeletePending = false;
+PendingEnergyDelete webserver_pendingEnergyDelete;
+
 // Pending configuration changes set by handleConfig (httpd task) and applied
 // in main.cpp loop() to keep all global state mutations on the loop task.
 static SemaphoreHandle_t s_configMutex = nullptr;
@@ -754,6 +758,34 @@ static esp_err_t handleEnergyInject(PsychicRequest *req) {
   return req->reply(200, "text/plain", "ok");
 }
 
+// POST /api/energy/delete -> delete a specific month from the energy history
+// Body: {"year":2026,"month":7}  or  year=2026&month=7
+static esp_err_t handleEnergyDelete(PsychicRequest *req) {
+  int year = 0, month = 0;
+
+  if (req->contentType() == "application/json" && req->contentLength() > 0) {
+    s_httpArena.reset();
+    JsonDocument doc(&s_httpArena);
+    DeserializationError err = deserializeJson(doc, req->body());
+    if (err) return req->reply(400, "text/plain", "Invalid JSON");
+    year  = doc["year"]  | 0;
+    month = doc["month"] | 0;
+  } else {
+    if (req->hasParam("year"))  year  = req->getParam("year")->value().toInt();
+    if (req->hasParam("month")) month = req->getParam("month")->value().toInt();
+  }
+
+  if (year < 2000 || year > 3000 || month < 1 || month > 12)
+    return req->reply(400, "text/plain", "Invalid year/month");
+
+  webserver_pendingEnergyDelete.year  = (uint16_t)year;
+  webserver_pendingEnergyDelete.month = (uint8_t)month;
+  webserver_energyDeletePending = true;
+  webserver_ssePushPending = true;
+
+  return req->reply(200, "text/plain", "ok");
+}
+
 // POST /api/reboots/reset -> persistenten Reboot-Zähler auf 0 zurücksetzen
 static esp_err_t handleRebootsReset(PsychicRequest *req) {
   resetRebootCounter();
@@ -886,6 +918,7 @@ void webserver_begin() {
   server.on("/api/temp/assign", HTTP_POST, handleTempAssign);
   server.on("/api/energy/reset",      HTTP_POST, handleEnergyReset);
   server.on("/api/energy/inject",     HTTP_POST, handleEnergyInject);
+  server.on("/api/energy/delete",     HTTP_POST, handleEnergyDelete);
   server.on("/api/reboots/reset",     HTTP_POST, handleRebootsReset);
   server.on("/api/crashlog",           HTTP_GET,  handleCrashLog);
 

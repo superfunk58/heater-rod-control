@@ -33,5 +33,6 @@ void fillStatus(JsonVariant doc);   // populate energy_* fields into doc
 // If the month already exists in the history ring, its Wh is replaced.
 // Otherwise a new entry is appended. Returns true on success.
 bool injectPreviousMonth(uint16_t year, uint8_t month, uint32_t wh);
+bool deleteMonth(uint16_t year, uint8_t month);
 
 }  // namespace Energy

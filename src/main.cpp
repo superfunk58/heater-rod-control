@@ -1348,6 +1348,17 @@ void loop() {
            webserver_pendingEnergyInject.month);
   }
 
+  // Drain deferred energy month deletion from httpd task (handleEnergyDelete).
+  if (webserver_energyDeletePending) {
+    webserver_energyDeletePending = false;
+    Energy::deleteMonth(
+      webserver_pendingEnergyDelete.year,
+      webserver_pendingEnergyDelete.month);
+    webLog("[Energy] deleted month %u-%02u",
+           webserver_pendingEnergyDelete.year,
+           webserver_pendingEnergyDelete.month);
+  }
+
   // HTTP handlers set this flag when they mutate state; we drain it once
   // per loop iteration so events.send() is only ever called from the loop
   // task (PoolController pattern — eliminates cross-task _clients races).

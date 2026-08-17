@@ -70,7 +70,7 @@
         "type": "function",
         "z": "f1a2b3c4",
         "name": "Ring Buffer (200)",
-        "func": "if (!context.log) context.log = [];\ncontext.log.push({\n    msg: msg.payload,\n    cat: msg.topic,\n    ts: msg.timestamp\n});\nif (context.log.length > 200) context.log.shift();\n\n// Build formatted text for the dashboard\nconst lines = context.log.slice(-50).map(e => {\n    const d = new Date(e.ts);\n    const ts = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();\n    const prefix = e.cat === 'error' ? '❌' : e.cat === 'warn' ? '⚠️' : 'ℹ️';\n    return `[${ts}] ${prefix} ${e.msg}`;\n});\n\nreturn { payload: lines.join(\"\\n\") };",
+        "func": "if (msg.payload === '__CLEAR__') {\n    context.log = [];\n    return { payload: '' };\n}\nif (!context.log) context.log = [];\ncontext.log.push({\n    msg: msg.payload,\n    cat: msg.topic,\n    ts: msg.timestamp\n});\nif (context.log.length > 200) context.log.shift();\n\n// Build formatted text for the dashboard\nconst lines = context.log.slice(-50).map(e => {\n    const d = new Date(e.ts);\n    const ts = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();\n    const prefix = e.cat === 'error' ? '❌' : e.cat === 'warn' ? '⚠️' : 'ℹ️';\n    return `[${ts}] ${prefix} ${e.msg}`;\n});\n\nreturn { payload: lines.join(\"\\n\") };",
         "outputs": 1,
         "x": 560,
         "y": 100,
@@ -96,14 +96,46 @@
         "wires": []
     },
     {
+        "id": "ui_group_controls",
+        "type": "ui_group",
+        "name": "Controls",
+        "tab": "ui_tab_serial",
+        "order": 1,
+        "disp": false,
+        "width": "12",
+        "collapse": false
+    },
+    {
         "id": "ui_group_log",
         "type": "ui_group",
         "name": "Serial Log (Live)",
         "tab": "ui_tab_serial",
-        "order": 1,
+        "order": 2,
         "disp": true,
         "width": "12",
         "collapse": false
+    },
+    {
+        "id": "clear_button",
+        "type": "ui_button",
+        "z": "f1a2b3c4",
+        "group": "ui_group_controls",
+        "name": "Clear Log",
+        "order": 1,
+        "width": "3",
+        "height": "1",
+        "label": "Clear Log",
+        "color": "",
+        "bgcolor": "",
+        "icon": "fa-trash",
+        "payload": "__CLEAR__",
+        "payloadType": "str",
+        "topic": "",
+        "x": 340,
+        "y": 160,
+        "wires": [
+            ["log_buffer"]
+        ]
     },
     {
         "id": "ui_tab_serial",

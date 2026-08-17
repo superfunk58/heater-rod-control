@@ -47,6 +47,14 @@ struct PendingEnergyInject {
 extern volatile bool webserver_energyInjectPending;
 extern PendingEnergyInject webserver_pendingEnergyInject;
 
+// Pending energy month deletion (set by HTTP handler, drained by loop task).
+struct PendingEnergyDelete {
+  uint16_t year = 0;
+  uint8_t  month = 0;
+};
+extern volatile bool webserver_energyDeletePending;
+extern PendingEnergyDelete webserver_pendingEnergyDelete;
+
 // Pending configuration changes set by HTTP handlers and applied in loop()
 // to avoid cross-task modification of String/numeric globals.
 struct PendingConfig {

@@ -9,12 +9,11 @@ namespace TempSensors {
 
 // ----- Konfiguration -----
 static constexpr uint32_t REQUEST_INTERVAL_MS = 5000;   // alle 5s ein neuer Read
-static constexpr uint32_t CONVERSION_WAIT_MS  = 250;    // 10-bit DS18B20 needs 187.5ms; 250ms margin
 static constexpr uint8_t  MAX_FAIL_STREAK     = 3;      // declare sensor lost after 3 consecutive fails
 static constexpr uint8_t  BUS_RESET_FAILS     = 5;      // trigger bus reset after 5 consecutive fails
 static constexpr uint32_t BUS_RESET_DELAY_MS  = 1000;   // delay after bus reset
 static constexpr uint32_t ONEWIRE_TIMEOUT_MS  = 500;    // timeout for OneWire operations
-static constexpr float    T_MIN_VALID         = -10.0f;
+static constexpr float    T_MIN_VALID         = -55.0f;  // DS18B20 spec: -55°C to +125°C
 static constexpr float    T_MAX_VALID         = 100.0f;
 // 85.0 C is the DS18B20 power-on scratchpad default: before the first
 // conversion after a reset completes, every read returns exactly 85.0.
@@ -51,20 +50,6 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 // Deferred assignment state (set by httpd task, drained by loop task in tick())
 volatile bool     g_tempAssignPending = false;
 PendingAssign     g_tempPendingAssign;
-
-// Non-blocking conversion state machine
-enum class ConvState : uint8_t { IDLE, WAITING };
-static ConvState s_convState = ConvState::IDLE;
-static uint32_t  s_convStartMs = 0;
-
-// Rescan state machine: rescan() enumerates sensors and issues an async
-// conversion request. The results are read on a subsequent tick() once
-// the conversion completes (~250ms later), avoiding any blocking delay.
-static bool     s_rescanReadPending = false;
-static uint32_t s_rescanConvStartMs = 0;
-static uint8_t  s_rescanCount = 0;
-static uint64_t s_rescanRoms[MAX_SENSORS];
-static float    s_rescanVals[MAX_SENSORS];
 
 // ===== ROM <-> Helpers =====================================================
 
@@ -215,9 +200,9 @@ void begin(uint8_t pin) {
   delay(10);
 
   s_dt->begin();
-  s_dt->setResolution(10);            // 10-bit = 187.5ms conversion, faster + more stable
-  s_dt->setWaitForConversion(false);  // NON-BLOCKING — critical for WiFi stability!
-  webLog("[Temp] DallasTemperature library init done (async mode)");
+  s_dt->setResolution(12);            // 12-bit = 750ms conversion, 0.0625°C precision
+  s_dt->setWaitForConversion(true);   // blocking mode — library handles conversion timing
+  webLog("[Temp] DallasTemperature library init done (blocking mode)");
   loadMapping();
 
   // Initial scan. Up to 2 attempts: if the bus was still settling (or a sensor
@@ -229,6 +214,8 @@ void begin(uint8_t pin) {
       s_wire->reset();
       delay(50);
       s_dt->begin();
+      s_dt->setResolution(12);
+      s_dt->setWaitForConversion(true);
     }
     uint8_t cnt = s_dt->getDeviceCount();
     webLog("[Temp] getDeviceCount() = %d", cnt);
@@ -251,7 +238,6 @@ void begin(uint8_t pin) {
   }
   webLog("[Temp] Scan complete: %u DS18B20 sensor(s)", (unsigned)s_count);
   s_lastReadMs = millis();
-  s_convState = ConvState::IDLE;
 }
 
 void tick() {
@@ -282,41 +268,6 @@ void tick() {
     rescan();
   }
 
-  // Rescan phase 2: read conversion results after CONVERSION_WAIT_MS.
-  // rescan() issued an async requestTemperatures(); now read the values.
-  if (s_rescanReadPending) {
-    if (now - s_rescanConvStartMs >= CONVERSION_WAIT_MS) {
-      s_rescanReadPending = false;
-      for (uint8_t i = 0; i < s_rescanCount; i++) {
-        uint8_t addr[8];
-        romToBytes(s_rescanRoms[i], addr);
-        char hex[24]; romToHex(s_rescanRoms[i], hex);
-        float t = s_dt->getTempC(addr);
-        if (t == DEVICE_DISCONNECTED_C || t == T_POWER_ON_DEFAULT ||
-            t < T_MIN_VALID || t > T_MAX_VALID) {
-          s_rescanVals[i] = NAN;
-          webLog("[Temp]  Rescan read FAIL[%d] ROM=%s", i, hex);
-        } else {
-          s_rescanVals[i] = t;
-          webLog("[Temp]  Rescan read OK [%d] ROM=%s T=%.2f C", i, hex, t);
-        }
-      }
-      // Atomic commit of the new sensor set.
-      portENTER_CRITICAL(&s_mux);
-      for (uint8_t i = 0; i < s_rescanCount; i++) {
-        s_roms[i] = s_rescanRoms[i];
-        s_vals[i] = s_rescanVals[i];
-      }
-      s_count = s_rescanCount;
-      portEXIT_CRITICAL(&s_mux);
-      webLog("[Temp] Manual rescan complete: %u sensors committed", (unsigned)s_rescanCount);
-      // Restart the conversion state machine cleanly.
-      s_convState = ConvState::IDLE;
-      s_lastReadMs = millis();
-    }
-    return;  // skip regular read cycle while rescan conversion is in progress
-  }
-
   // Handle bus reset delay - skip reads during recovery period
   if (s_busResetPending) {
     if (millis() - s_busResetMs < BUS_RESET_DELAY_MS) {
@@ -324,32 +275,17 @@ void tick() {
     }
     s_busResetPending = false;
     webLog("[Temp] Bus recovery complete, resuming reads");
-    // Restart the conversion cycle cleanly: after a reset the scratchpads
-    // contain the 85.0 power-on default, so request a FRESH conversion now
-    // instead of letting a stale WAITING state read garbage immediately.
-    s_dt->requestTemperatures();
-    s_convState = ConvState::WAITING;
-    s_convStartMs = millis();
-    return;
   }
 
   if (s_count == 0) return;  // no sensors found; only boot scan or manual rescan re-enumerates
 
-  switch (s_convState) {
-    case ConvState::IDLE:
-      if (now - s_lastReadMs < REQUEST_INTERVAL_MS) return;
-      // Issue async conversion request (~2ms for the command, NO 750ms wait)
-      s_dt->requestTemperatures();
-      s_convState = ConvState::WAITING;
-      s_convStartMs = now;
-      return;  // let loop() continue immediately — WiFi stays responsive!
+  // Rate-limit reads
+  if (now - s_lastReadMs < REQUEST_INTERVAL_MS) return;
+  s_lastReadMs = now;
 
-    case ConvState::WAITING:
-      if (now - s_convStartMs < CONVERSION_WAIT_MS) return;  // not ready yet
-      s_convState = ConvState::IDLE;
-      s_lastReadMs = now;
-      break;  // fall through to read results
-  }
+  // Blocking conversion: the DallasTemperature library handles all timing
+  // internally. With 10-bit resolution this blocks ~187.5ms.
+  s_dt->requestTemperatures();
 
   // Read all known sensors by ROM address. Track failure streaks for bus reset.
   uint8_t totalFails = 0;
@@ -359,24 +295,18 @@ void tick() {
     if (ok) {
       s_vals[i] = t;
       if (s_failStreak[i] > 0) {
-        webLog("[Temp] Sensor %d recovered (T=%.1f)", i, t);
+        webLog("[Temp] Sensor %d recovered (T=%.2f)", i, t);
         s_failStreak[i] = 0;
       }
     } else {
       totalFails++;
       const uint8_t streak = ++s_failStreak[i];
       if (streak == 1) {
-        webLog("[Temp] Sensor %d FAIL (streak=%d, raw=%.2f)", i, streak, t);
+        webLog("[Temp] Sensor %d FAIL (streak=%d, raw=%.4f)", i, streak, t);
       }
-      if (streak >= MAX_FAIL_STREAK) {
-        // Sensor declared lost only now: keep the last good value during the
-        // first MAX_FAIL_STREAK-1 transient fails so a single glitch doesn't
-        // flicker the UI/history to null.
-        if (!isnan(s_vals[i])) {
-          webLog("[Temp] Sensor %d declared LOST after %d fails", i, streak);
-          s_vals[i] = NAN;
-        }
-      }
+      // Never declare a sensor lost: keep the last good value indefinitely.
+      // A bad read doesn't overwrite s_vals[i], so the UI/history still shows
+      // the last valid temperature until the sensor recovers.
     }
   }
 
@@ -434,36 +364,51 @@ void rescan() {
   webLog("[Temp] Manual rescan triggered");
   s_dt->begin();
 
-  // Phase 1: enumerate sensors (fast, non-blocking OneWire bus search).
   // Build into locals first; commit to the shared arrays under the lock so
   // scanList()/tick() readers (other task) never see a half-updated state.
-  s_rescanCount = 0;
+  uint64_t roms[MAX_SENSORS];
+  float    vals[MAX_SENSORS];
+  uint8_t  count = 0;
 
   uint8_t cnt = s_dt->getDeviceCount();
-  for (uint8_t i = 0; i < cnt && s_rescanCount < MAX_SENSORS; i++) {
+  for (uint8_t i = 0; i < cnt && count < MAX_SENSORS; i++) {
     uint8_t addr[8];
     if (s_dt->getAddress(addr, i) && addr[0] == 0x28) {
-      s_rescanRoms[s_rescanCount] = romFromBytes(addr);
-      s_rescanVals[s_rescanCount] = NAN;
-      s_rescanCount++;
+      roms[count] = romFromBytes(addr);
+      vals[count] = NAN;
+      count++;
     }
   }
-  webLog("[Temp] Manual rescan: found %u sensors, requesting conversion", (unsigned)s_rescanCount);
+  webLog("[Temp] Manual rescan complete: %u sensors", (unsigned)count);
 
-  // Phase 2: issue async conversion request (non-blocking, ~2ms for command).
-  // Results will be read in tick() after CONVERSION_WAIT_MS.
-  if (s_rescanCount > 0) {
-    s_dt->requestTemperatures();
-    s_rescanReadPending = true;
-    s_rescanConvStartMs = millis();
-  } else {
-    // No sensors: commit empty result immediately.
-    portENTER_CRITICAL(&s_mux);
-    s_count = 0;
-    portEXIT_CRITICAL(&s_mux);
-    s_convState = ConvState::IDLE;
-    s_lastReadMs = millis();
+  // Read temperatures immediately so scanList returns live values.
+  if (count > 0) {
+    webLog("[Temp] Reading temperatures after rescan...");
+    s_dt->requestTemperatures();  // blocks ~187.5ms (10-bit)
+    for (uint8_t i = 0; i < count; i++) {
+      uint8_t addr[8];
+      romToBytes(roms[i], addr);
+      char hex[24]; romToHex(roms[i], hex);
+      float t = s_dt->getTempC(addr);
+      if (t == DEVICE_DISCONNECTED_C || t == T_POWER_ON_DEFAULT ||
+          t < T_MIN_VALID || t > T_MAX_VALID) {
+        vals[i] = NAN;
+        webLog("[Temp]  Rescan read FAIL[%d] ROM=%s", i, hex);
+      } else {
+        vals[i] = t;
+        webLog("[Temp]  Rescan read OK [%d] ROM=%s T=%.2f C", i, hex, t);
+      }
+    }
   }
+
+  // Atomic commit of the new sensor set.
+  portENTER_CRITICAL(&s_mux);
+  for (uint8_t i = 0; i < count; i++) { s_roms[i] = roms[i]; s_vals[i] = vals[i]; }
+  s_count = count;
+  portEXIT_CRITICAL(&s_mux);
+
+  // Next regular read happens after REQUEST_INTERVAL_MS.
+  s_lastReadMs = millis();
 }
 
 // Thread-safe ROM getters: uint64_t is 8 bytes on a 32-bit CPU, so an

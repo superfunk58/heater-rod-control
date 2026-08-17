@@ -537,8 +537,22 @@ function render(s) {
         tr.style.borderBottom = '1px solid #1e293b';
         const m = monthNames[(h.month||1)-1] || h.month;
         tr.innerHTML = '<td style="padding:6px 4px;color:#94a3b8;">' + m + ' ' + h.year + '</td>' +
-                       '<td style="padding:6px 4px;text-align:right;font-variant-numeric:tabular-nums;color:#38bdf8;">' + fmtWh(h.wh) + '</td>';
+                       '<td style="padding:6px 4px;text-align:right;font-variant-numeric:tabular-nums;color:#38bdf8;">' + fmtWh(h.wh) + '</td>' +
+                       '<td style="padding:6px 4px;text-align:right;"><button class="btnDelMonth" data-year="' + h.year + '" data-month="' + h.month + '" style="background:#1e293b;border:1px solid #334155;color:#f87171;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:12px;">Löschen</button></td>';
         tbody.appendChild(tr);
+      });
+      tbody.querySelectorAll('.btnDelMonth').forEach(btn => {
+        btn.onclick = () => {
+          const y = parseInt(btn.dataset.year, 10);
+          const m = parseInt(btn.dataset.month, 10);
+          const lbl = monthNames[(m||1)-1] || m;
+          if (!confirm(lbl + ' ' + y + ' aus der Historie löschen?')) return;
+          fetch('/api/energy/delete', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({year:y, month:m})
+          }).catch(()=>{});
+        };
       });
     }
   }
