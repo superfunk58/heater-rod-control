@@ -246,8 +246,9 @@ void webLog(const char* fmt, ...) {
   vsnprintf(line, sizeof(line), fmt, args);
   va_end(args);
 
+  // Log.println writes to Serial AND webLogBufferLine via TeePrint.
+  // Do NOT call webLogBufferLine() directly here — that would double-log.
   /*KEEP*/Log.println(line);/*KEEP*/
-  webLogBufferLine(line);
 }
 
 // Direct pointer into the request's parameter value (no String copy).
@@ -641,14 +642,10 @@ static esp_err_t handleReboot(PsychicRequest *req) {
 // ---- Temperature sensor routes ----------------------------------------
 // GET /api/temp/scan -> manuelles Rescan + Liste aller gefundenen DS18B20 mit Live-Wert
 static esp_err_t handleTempScan(PsychicRequest *req) {
-  // Defer the actual (blocking, array-mutating) rescan to the loop task to
-  // avoid racing with tick(). Wait briefly for it to complete so the UI gets
-  // fresh values, but never block the httpd task indefinitely.
+  // Request a non-blocking rescan on the loop task. The rescan enumerates
+  // sensors and issues an async conversion (~250ms). Results appear in
+  // scanList() on the next status poll — no need to block the httpd task.
   TempSensors::requestRescan();
-  for (int i = 0; i < 25; i++) {           // up to ~500 ms (rescan takes ~200-300ms)
-    vTaskDelay(pdMS_TO_TICKS(20));
-    if (!TempSensors::rescanPending()) break;
-  }
   // Static: together with the 2 KB output buffer below this would overflow the
   // 4 KB httpd task stack. Safe: handlers are serialized on the httpd task.
   static TempSensors::Found list[TempSensors::MAX_SENSORS];

@@ -57,6 +57,15 @@ enum class ConvState : uint8_t { IDLE, WAITING };
 static ConvState s_convState = ConvState::IDLE;
 static uint32_t  s_convStartMs = 0;
 
+// Rescan state machine: rescan() enumerates sensors and issues an async
+// conversion request. The results are read on a subsequent tick() once
+// the conversion completes (~250ms later), avoiding any blocking delay.
+static bool     s_rescanReadPending = false;
+static uint32_t s_rescanConvStartMs = 0;
+static uint8_t  s_rescanCount = 0;
+static uint64_t s_rescanRoms[MAX_SENSORS];
+static float    s_rescanVals[MAX_SENSORS];
+
 // ===== ROM <-> Helpers =====================================================
 
 static void romToBytes(uint64_t rom, uint8_t out[8]) {
@@ -248,6 +257,8 @@ void begin(uint8_t pin) {
 void tick() {
   if (!s_dt) return;
 
+  const uint32_t now = millis();
+
   // Drain deferred sensor assignments from the httpd task (handleTempAssign).
   // uint64_t writes + NVS save must happen on the loop task to avoid torn reads
   // and blocking flash writes from the httpd task.
@@ -271,6 +282,41 @@ void tick() {
     rescan();
   }
 
+  // Rescan phase 2: read conversion results after CONVERSION_WAIT_MS.
+  // rescan() issued an async requestTemperatures(); now read the values.
+  if (s_rescanReadPending) {
+    if (now - s_rescanConvStartMs >= CONVERSION_WAIT_MS) {
+      s_rescanReadPending = false;
+      for (uint8_t i = 0; i < s_rescanCount; i++) {
+        uint8_t addr[8];
+        romToBytes(s_rescanRoms[i], addr);
+        char hex[24]; romToHex(s_rescanRoms[i], hex);
+        float t = s_dt->getTempC(addr);
+        if (t == DEVICE_DISCONNECTED_C || t == T_POWER_ON_DEFAULT ||
+            t < T_MIN_VALID || t > T_MAX_VALID) {
+          s_rescanVals[i] = NAN;
+          webLog("[Temp]  Rescan read FAIL[%d] ROM=%s", i, hex);
+        } else {
+          s_rescanVals[i] = t;
+          webLog("[Temp]  Rescan read OK [%d] ROM=%s T=%.2f C", i, hex, t);
+        }
+      }
+      // Atomic commit of the new sensor set.
+      portENTER_CRITICAL(&s_mux);
+      for (uint8_t i = 0; i < s_rescanCount; i++) {
+        s_roms[i] = s_rescanRoms[i];
+        s_vals[i] = s_rescanVals[i];
+      }
+      s_count = s_rescanCount;
+      portEXIT_CRITICAL(&s_mux);
+      webLog("[Temp] Manual rescan complete: %u sensors committed", (unsigned)s_rescanCount);
+      // Restart the conversion state machine cleanly.
+      s_convState = ConvState::IDLE;
+      s_lastReadMs = millis();
+    }
+    return;  // skip regular read cycle while rescan conversion is in progress
+  }
+
   // Handle bus reset delay - skip reads during recovery period
   if (s_busResetPending) {
     if (millis() - s_busResetMs < BUS_RESET_DELAY_MS) {
@@ -288,8 +334,6 @@ void tick() {
   }
 
   if (s_count == 0) return;  // no sensors found; only boot scan or manual rescan re-enumerates
-
-  uint32_t now = millis();
 
   switch (s_convState) {
     case ConvState::IDLE:
@@ -390,60 +434,36 @@ void rescan() {
   webLog("[Temp] Manual rescan triggered");
   s_dt->begin();
 
+  // Phase 1: enumerate sensors (fast, non-blocking OneWire bus search).
   // Build into locals first; commit to the shared arrays under the lock so
   // scanList()/tick() readers (other task) never see a half-updated state.
-  uint64_t roms[MAX_SENSORS];
-  float    vals[MAX_SENSORS];
-  uint8_t  count = 0;
+  s_rescanCount = 0;
 
   uint8_t cnt = s_dt->getDeviceCount();
-  for (uint8_t i = 0; i < cnt && count < MAX_SENSORS; i++) {
+  for (uint8_t i = 0; i < cnt && s_rescanCount < MAX_SENSORS; i++) {
     uint8_t addr[8];
     if (s_dt->getAddress(addr, i) && addr[0] == 0x28) {
-      roms[count] = romFromBytes(addr);
-      vals[count] = NAN;
-      count++;
+      s_rescanRoms[s_rescanCount] = romFromBytes(addr);
+      s_rescanVals[s_rescanCount] = NAN;
+      s_rescanCount++;
     }
   }
-  webLog("[Temp] Manual rescan complete: %u sensors", (unsigned)count);
+  webLog("[Temp] Manual rescan: found %u sensors, requesting conversion", (unsigned)s_rescanCount);
 
-  // Read temperatures immediately so scanList returns live values.
-  // The driver runs in non-blocking mode (setWaitForConversion(false)), so
-  // requestTemperatures() returns before the ~187.5ms conversion finishes and
-  // an immediate read would fail. Block for the conversion here (uses delay(),
-  // which yields to the WiFi task), then restore async mode for tick().
-  if (count > 0) {
-    webLog("[Temp] Reading temperatures after rescan...");
-    s_dt->setWaitForConversion(true);
-    s_dt->requestTemperatures();        // blocks ~187.5ms (10-bit), WiFi stays alive
-    s_dt->setWaitForConversion(false);  // restore non-blocking mode for tick()
-    for (uint8_t i = 0; i < count; i++) {
-      uint8_t addr[8];
-      romToBytes(roms[i], addr);
-      char hex[24]; romToHex(roms[i], hex);
-      float t = s_dt->getTempC(addr);
-      if (t == DEVICE_DISCONNECTED_C || t == T_POWER_ON_DEFAULT ||
-          t < T_MIN_VALID || t > T_MAX_VALID) {
-        vals[i] = NAN;
-        webLog("[Temp]  Rescan read FAIL[%d] ROM=%s", i, hex);
-      } else {
-        vals[i] = t;
-        webLog("[Temp]  Rescan read OK [%d] ROM=%s T=%.2f C", i, hex, t);
-      }
-    }
+  // Phase 2: issue async conversion request (non-blocking, ~2ms for command).
+  // Results will be read in tick() after CONVERSION_WAIT_MS.
+  if (s_rescanCount > 0) {
+    s_dt->requestTemperatures();
+    s_rescanReadPending = true;
+    s_rescanConvStartMs = millis();
+  } else {
+    // No sensors: commit empty result immediately.
+    portENTER_CRITICAL(&s_mux);
+    s_count = 0;
+    portEXIT_CRITICAL(&s_mux);
+    s_convState = ConvState::IDLE;
+    s_lastReadMs = millis();
   }
-
-  // Atomic commit of the new sensor set.
-  portENTER_CRITICAL(&s_mux);
-  for (uint8_t i = 0; i < count; i++) { s_roms[i] = roms[i]; s_vals[i] = vals[i]; }
-  s_count = count;
-  portEXIT_CRITICAL(&s_mux);
-
-  // Restart the conversion state machine cleanly: rescan() did its own
-  // blocking conversion, so a pending WAITING state would read a stale
-  // scratchpad. Next regular read happens after REQUEST_INTERVAL_MS.
-  s_convState = ConvState::IDLE;
-  s_lastReadMs = millis();
 }
 
 // Thread-safe ROM getters: uint64_t is 8 bytes on a 32-bit CPU, so an

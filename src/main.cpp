@@ -566,7 +566,6 @@ void MQTT_connect() {
     if (!wasConnected) {
       digitalWrite(STATUS_LED, STATUS_LED_ON);
       wasConnected = true;
-      Log.println("[MQTT] Connected");
       webLog("[MQTT] Connected");
     }
     return;
@@ -584,7 +583,6 @@ void MQTT_connect() {
   // intentionally OFF, so gating on WiFi.status() would block MQTT forever.
   // The WiFiClient is a NetworkClient (Core 3.x) and routes over Ethernet too.
   if (!NetManager::isOnline()) {
-    Log.println("[MQTT] No network, waiting...");
     webLog("[MQTT] No network, waiting...");
     return;
   }
@@ -594,8 +592,7 @@ void MQTT_connect() {
     mqttClient.disconnect();
     digitalWrite(STATUS_LED, STATUS_LED_OFF);
     wasConnected = false;
-    Log.println("[MQTT] Disconnected, will retry");
-    webLog("[MQTT] Disconnected");
+    webLog("[MQTT] Disconnected, will retry");
   }
 
   // Attempt connection. Non-blocking: try once per 30s interval.
@@ -607,11 +604,9 @@ void MQTT_connect() {
   if (ok) {
     digitalWrite(STATUS_LED, STATUS_LED_ON);
     wasConnected = true;
-    Log.println("[MQTT] Reconnected");
     webLog("[MQTT] Reconnected");
     mqttSubscribeAll();
   } else {
-    Log.printf("[MQTT] Connect failed (state=%d), retry in 30s\n", mqttClient.state());
     webLog("[MQTT] Connect failed (state=%d), retry in 30s", mqttClient.state());
     failsafe_off();
   }
@@ -926,9 +921,9 @@ void drainService() {
     webLog("[Drain] Kompressor-Entwaesserung AN (max %lus)", drainPulseMs / 1000);
     webserver_ssePushPending = true;
     // Brief yield after relay energize: inductive load EMI can disrupt
-    // the W5500 SPI bus for a few ms. Let the Ethernet driver process
-    // any spurious link events before continuing.
-    delay(10);
+    // the W5500 SPI bus for a few ms. Use vTaskDelay(1 tick) instead of
+    // delay(10) to yield without blocking the full 10ms.
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
   // Enforce the maximum on-time: auto-return to LOW.
   if (drainActive && (millis() - drainStartMs >= drainPulseMs)) {
@@ -937,7 +932,7 @@ void drainService() {
     drainOffPending = true;
     webLog("[Drain] Kompressor-Entwaesserung AUS (auto nach %lus)", drainPulseMs / 1000);
     webserver_ssePushPending = true;
-    delay(10);
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
@@ -1022,7 +1017,6 @@ void loop() {
   if (mqttInterfaceChanged) {
     mqttInterfaceChanged = false;
     if (mqttClient.connected()) {
-      Log.println("[MQTT] Interface changed -> force disconnect");
       webLog("[MQTT] Interface changed -> force disconnect");
       mqttClient.disconnect();
     }

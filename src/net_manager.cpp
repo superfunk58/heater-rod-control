@@ -5,6 +5,8 @@
 #include <ESPmDNS.h>
 #include <lwip/sockets.h>
 #include <errno.h>
+#include <driver/spi_master.h>
+#include <driver/gpio.h>
 #include "secrets.h"     // WLAN_SSID / WLAN_PASS / AIO_SERVER / AIO_SERVERPORT
 #include "webserver.h"   // webLog(), webserver_closeAllSseClients()
 #include "tee_print.h"   // Log (tee Serial -> webLog)
@@ -143,15 +145,12 @@ static bool probeConnectStart(unsigned long nowMs) {
 static void lanVerifyStart(unsigned long nowMs) {
   probeClose();   // drop any stale socket from a link flap
   if (!resolveProbeHost(AIO_SERVER, s_probeServer)) {
-    Log.println("[Net] LAN verify: broker DNS lookup failed -> retry in 60s");
-    webLog("[Net] LAN verify: broker DNS lookup failed");
+    webLog("[Net] LAN verify: broker DNS lookup failed -> retry in 60s");
     s_probeNextStart = nowMs + PROBE_RETRY_MS;
     return;
   }
   {
     char ip[16]; fmtIP(ip, sizeof(ip), s_probeServer);
-    Log.printf("[Net] LAN verify: probing MQTT broker %s:%u via W5500\n",
-                  ip, (unsigned)AIO_SERVERPORT);
     webLog("[Net] LAN verify: probing MQTT broker %s:%u via W5500", ip, (unsigned)AIO_SERVERPORT);
   }
   s_probeAttempts = 0;
@@ -174,8 +173,7 @@ static void lanVerifyService(unsigned long nowMs) {
       s_probeActive    = false;
       s_probeNextStart = nowMs + PROBE_RETRY_MS;
       if (s_livenessFailRounds < 255) s_livenessFailRounds++;
-      Log.println("[Net] LAN verify FAILED (broker unreachable) -> keeping WiFi, retry in 60s");
-      webLog("[Net] LAN verify: broker unreachable (fail round %u)", s_livenessFailRounds);
+      webLog("[Net] LAN verify FAILED (broker unreachable) -> keeping WiFi, retry in 60s (fail round %u)", s_livenessFailRounds);
       return;
     }
     probeConnectStart(nowMs);   // a false return counts as a failed attempt
@@ -198,8 +196,7 @@ static void lanVerifyService(unsigned long nowMs) {
       s_lanVerified = true;
       s_lastVerifyOkMs     = nowMs;
       s_livenessFailRounds = 0;
-      Log.println("[Net] LAN verified (MQTT broker reachable via W5500) -> WiFi may be switched off");
-      webLog("[Net] LAN verified: MQTT broker reachable");
+      webLog("[Net] LAN verified (MQTT broker reachable via W5500) -> WiFi may be switched off");
     }
     return;   // err != 0 (refused/unreachable) -> next attempt
   }
@@ -230,7 +227,6 @@ static volatile bool s_w5500Restarting = false;
 // re-negotiate and events (ETH_CONNECTED, ETH_GOT_IP) will fire normally.
 // Total blocking time: ~160 ms (well under the 5 s task watchdog).
 static void restartW5500() {
-  Log.println("[Net] W5500 full restart (HW reset + driver re-init)");
   webLog("[Net] W5500 full restart (HW reset + driver re-init)");
 
   // Close all SSE clients and pause SSE: the httpd task would otherwise try
@@ -264,6 +260,17 @@ static void restartW5500() {
   // and re-registers the netif — something a bare hardware reset can't do.
   ETH.end();
   delay(100);  // let ESP-IDF fully clean up before re-init
+
+  // ETH.end() in Arduino Core 3.x does NOT free the SPI bus or GPIO ISR
+  // service. Without this manual cleanup, ETH.begin() hits
+  //   "spi_bus_initialize: SPI bus already initialized"
+  //   "gpio_install_isr_service: GPIO isr service already installed"
+  // leaving the W5500 driver in an inconsistent state that can freeze
+  // the ESP on subsequent SPI transactions.
+  spi_bus_free(SPI2_HOST);
+  gpio_uninstall_isr_service();  // safe no-op if no ISR service installed
+  delay(50);
+
   startEthernet();
 
   // Clear guard: events from the fresh ETH.begin() are now valid.
@@ -296,7 +303,6 @@ static void startWifi() {
   WiFi.setAutoReconnect(true);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
   WiFi.begin(WLAN_SSID, WLAN_PASS);
-  Log.printf("[Net] WiFi STA started (SSID=%s)\n", WLAN_SSID);
   webLog("[Net] WiFi STA started (SSID=%s)", WLAN_SSID);
 }
 
@@ -304,14 +310,11 @@ static void stopWifi() {
   if (WiFi.getMode() == WIFI_OFF) return; // already off
   WiFi.disconnect(true, false);  // disconnect + turn off radio, keep AP config
   WiFi.mode(WIFI_OFF);
-  Log.println("[Net] WiFi switched OFF");
   webLog("[Net] WiFi switched OFF");
 }
 
 // ---- W5500 Ethernet bring-up ---------------------------------------------
 static void startEthernet() {
-  Log.printf("[Net] W5500 init: SCLK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d SPI=%uMHz\n",
-         W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_CS, W5500_INT, W5500_RST, W5500_SPI_FREQ_MHZ);
   webLog("[Net] W5500 init: SCLK=%d MISO=%d MOSI=%d CS=%d INT=%d RST=%d SPI=%uMHz",
          W5500_SCLK, W5500_MISO, W5500_MOSI, W5500_CS, W5500_INT, W5500_RST, W5500_SPI_FREQ_MHZ);
   // Core 3.x SPI-Ethernet begin (creates the esp_netif interface).
@@ -319,7 +322,6 @@ static void startEthernet() {
   if (!ETH.begin(ETH_PHY_W5500, 1, W5500_CS, W5500_INT, W5500_RST,
                  SPI2_HOST, W5500_SCLK, W5500_MISO, W5500_MOSI,
                  W5500_SPI_FREQ_MHZ)) {
-    Log.println("[Net] W5500 ETH.begin() FAILED (no chip / wiring?)");
     webLog("[Net] W5500 ETH.begin() FAILED (no chip / wiring?)");
     return;
   }
@@ -329,14 +331,11 @@ static void startEthernet() {
     bool ok = ip.fromString(LAN_IP) && gw.fromString(LAN_GW) &&
               mask.fromString(LAN_MASK) && dns.fromString(LAN_DNS);
     if (ok && ETH.config(ip, gw, mask, dns)) {
-      Log.printf("[Net] W5500 static IP %s gw %s\n", LAN_IP, LAN_GW);
       webLog("[Net] W5500 static IP %s gw %s", LAN_IP, LAN_GW);
     } else {
-      Log.println("[Net] W5500 static IP invalid -> using DHCP");
       webLog("[Net] W5500 static IP invalid -> using DHCP");
     }
   } else {
-    Log.println("[Net] W5500 using DHCP");
     webLog("[Net] W5500 using DHCP");
   }
 }
@@ -362,7 +361,6 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
       break;
     case ARDUINO_EVENT_ETH_CONNECTED:
       s_ethLinkUp = true;
-      Log.println("[Net] W5500 link UP");
       webLog("[Net] W5500 link UP");
       // Static IP: ETH.config() already set the IP before link up, but the
       // GOT_IP event only fires for DHCP. Mark has-IP here so the boot
@@ -370,7 +368,6 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
       if (!LAN_DHCP) {
         s_ethHasIP = true;
         char ip[16]; fmtIP(ip, sizeof(ip), ETH.localIP());
-        Log.printf("[Net] W5500 static IP active %s\n", ip);
         webLog("[Net] W5500 static IP active %s", ip);
         s_mdnsRestartPending = true;
         s_lanDownSince = 0;
@@ -382,7 +379,6 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
       s_ethLinkUp = true;
       {
         char ip[16]; fmtIP(ip, sizeof(ip), ETH.localIP());
-        Log.printf("[Net] W5500 GOT IP %s\n", ip);
         webLog("[Net] W5500 GOT IP %s", ip);
       }
       s_mdnsRestartPending = true;  // deferred to loop() — no heap ops in event handler
@@ -393,13 +389,12 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
       s_ethHasIP = false;
       s_lanVerified = false;      // connectivity must be re-proven after a flap
       s_probeActive = false;      // loop() closes the socket on the next round
-      Log.println("[Net] W5500 link DOWN");
       webLog("[Net] W5500 link DOWN");
       // Do NOT switch to WiFi immediately. Start the debounce timer; loop()
       // falls back to WiFi only if the LAN stays down past LAN_DOWN_GRACE_MS.
       if (s_lanMode && s_lanDownSince == 0) {
         s_lanDownSince = millis();
-        Log.println("[Net] LAN link down -> grace period before WiFi fallback");
+        webLog("[Net] LAN link down -> grace period before WiFi fallback");
       }
       break;
     case ARDUINO_EVENT_ETH_STOP:
@@ -416,7 +411,6 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       {
         char ip[16]; fmtIP(ip, sizeof(ip), WiFi.localIP());
-        Log.printf("[Net] WiFi GOT IP %s\n", ip);
         webLog("[Net] WiFi GOT IP %s", ip);
       }
       // Cache the SSID without heap allocation: WiFi.SSID() returns a String
@@ -494,13 +488,13 @@ bool loop() {
   // LAN-first boot phase: wait for link/IP, start WiFi fallback if deadline passes.
   if (s_lanMode && s_state == NetState::LAN && s_lanDeadline != 0) {
     if (s_ethHasIP) {
-      Log.println("[Net] LAN first-attempt SUCCESS");
+      webLog("[Net] LAN first-attempt SUCCESS");
       s_lanDeadline = 0;
       return true;
     }
     if ((long)(nowMs - s_lanDeadline) >= 0) {
       // LAN did not come up in time -> start WiFi fallback.
-      Log.println("[Net] LAN first-attempt TIMEOUT -> switching to WiFi fallback");
+      webLog("[Net] LAN first-attempt TIMEOUT -> switching to WiFi fallback");
       s_state = NetState::LAN_WIFI_FALLBACK;
       s_lanDeadline = 0;
       webserver_closeAllSseClients();  // kill zombie SSE sockets from LAN
@@ -521,8 +515,7 @@ bool loop() {
   // Only switch to WiFi once it has stayed down past the grace period.
   if (s_lanMode && s_state == NetState::LAN && !s_ethHasIP && s_lanDownSince != 0 &&
       (nowMs - s_lanDownSince >= LAN_DOWN_GRACE_MS)) {
-    Log.println("[Net] LAN down past grace -> starting WiFi fallback");
-    webLog("[Net] LAN down -> WiFi fallback");
+    webLog("[Net] LAN down past grace -> starting WiFi fallback");
     s_state = NetState::LAN_WIFI_FALLBACK;
     s_lanDownSince = 0;
     webserver_closeAllSseClients();  // kill zombie SSE sockets from LAN
@@ -534,8 +527,7 @@ bool loop() {
   // off — but ONLY after the LAN has been verified end-to-end (MQTT broker probe).
   // Until then the WiFi fallback stays up as the working uplink.
   if (s_lanMode && s_state == NetState::LAN_WIFI_FALLBACK && s_ethHasIP && s_lanVerified) {
-    Log.println("[Net] LAN verified while on WiFi -> switching back to LAN, WiFi OFF");
-    webLog("[Net] LAN verified -> switching back from WiFi, WiFi OFF");
+    webLog("[Net] LAN verified while on WiFi -> switching back to LAN, WiFi OFF");
     s_state = NetState::LAN;
     s_lanDownSince = 0;
     s_w5500ResetAttempts = 0;
@@ -553,15 +545,12 @@ bool loop() {
       s_livenessFailRounds >= LIVENESS_MAX_FAIL_ROUNDS) {
     if (s_w5500ResetAttempts < W5500_MAX_RESET_ATTEMPTS) {
       s_w5500ResetAttempts++;
-      Log.printf("[Net] LAN liveness failed -> W5500 restart %u/%u\n",
-                    s_w5500ResetAttempts, W5500_MAX_RESET_ATTEMPTS);
       webLog("[Net] LAN liveness failed -> W5500 restart %u/%u",
              s_w5500ResetAttempts, W5500_MAX_RESET_ATTEMPTS);
       restartW5500();
       s_livenessFailRounds = 0;
       s_lanDeadline = nowMs + LAN_BOOT_TIMEOUT_MS;  // wait up to 30 s for link/IP after restart
     } else {
-      Log.println("[Net] W5500 restarts exhausted -> WiFi fallback");
       webLog("[Net] W5500 restarts exhausted -> WiFi fallback");
       s_state = NetState::LAN_WIFI_FALLBACK;
       s_livenessFailRounds = 0;
@@ -582,7 +571,6 @@ bool loop() {
       (s_w5500RecoveryAttemptMs == 0 ||
        (nowMs - s_w5500RecoveryAttemptMs) >= W5500_RECOVERY_INTERVAL_MS)) {
     s_w5500RecoveryAttemptMs = nowMs;
-    Log.println("[Net] WiFi fallback: attempting W5500 recovery");
     webLog("[Net] WiFi fallback: attempting W5500 recovery");
     restartW5500();
   }

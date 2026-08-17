@@ -1,0 +1,117 @@
+[
+    {
+        "id": "serial_in",
+        "type": "serial in",
+        "z": "f1a2b3c4",
+        "name": "ESP32 Serial",
+        "serial": "serial_config",
+        "x": 120,
+        "y": 80,
+        "wires": [
+            ["split_lines", "raw_debug"]
+        ]
+    },
+    {
+        "id": "serial_config",
+        "type": "serial-port",
+        "z": "f1a2b3c4",
+        "serialport": "/dev/cu.wchusbserial21240",
+        "serialbaud": "115200",
+        "databits": "8",
+        "parity": "none",
+        "stopbits": "1",
+        "dtr": "none",
+        "rts": "none",
+        "cts": "none",
+        "dsr": "none",
+        "newline": "\\n",
+        "bin": "false",
+        "out": "char",
+        "addchar": "false",
+        "waitfor": "",
+        "request": "",
+        "requesttimeout": "10000",
+        "response": 0,
+        "enforce": true
+    },
+    {
+        "id": "raw_debug",
+        "type": "debug",
+        "z": "f1a2b3c4",
+        "name": "Raw Serial",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 380,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "split_lines",
+        "type": "function",
+        "z": "f1a2b3c4",
+        "name": "Parse & Tag",
+        "func": "// Buffer accumulation for partial lines\nif (!context.buffer) context.buffer = \"\";\ncontext.buffer += msg.payload;\n\nconst lines = context.buffer.split(\"\\n\");\ncontext.buffer = lines.pop(); // keep last partial\n\nconst out = [];\nfor (const line of lines) {\n    const trimmed = line.trim();\n    if (!trimmed) continue;\n\n    let category = \"info\";\n    if (/\\[Boot\\]/.test(trimmed))      category = \"boot\";\n    else if (/\\[Net\\]/.test(trimmed))   category = \"net\";\n    else if (/\\[Drain\\]/.test(trimmed)) category = \"drain\";\n    else if (/\\[Reg\\]/.test(trimmed))   category = \"reg\";\n    else if (/\\[DAC\\]/.test(trimmed))   category = \"dac\";\n    else if (/error|fail|brownout|panic|abort/i.test(trimmed)) category = \"error\";\n    else if (/warn/i.test(trimmed))     category = \"warn\";\n\n    out.push({\n        payload: trimmed,\n        topic: category,\n        timestamp: Date.now()\n    });\n}\nreturn [out];",
+        "outputs": 1,
+        "noerr": 0,
+        "x": 340,
+        "y": 100,
+        "wires": [
+            ["log_buffer"]
+        ]
+    },
+    {
+        "id": "log_buffer",
+        "type": "function",
+        "z": "f1a2b3c4",
+        "name": "Ring Buffer (200)",
+        "func": "if (!context.log) context.log = [];\ncontext.log.push({\n    msg: msg.payload,\n    cat: msg.topic,\n    ts: msg.timestamp\n});\nif (context.log.length > 200) context.log.shift();\n\n// Build formatted text for the dashboard\nconst lines = context.log.slice(-50).map(e => {\n    const d = new Date(e.ts);\n    const ts = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();\n    const prefix = e.cat === 'error' ? '❌' : e.cat === 'warn' ? '⚠️' : 'ℹ️';\n    return `[${ts}] ${prefix} ${e.msg}`;\n});\n\nreturn { payload: lines.join(\"\\n\") };",
+        "outputs": 1,
+        "x": 560,
+        "y": 100,
+        "wires": [
+            ["ui_log_template"]
+        ]
+    },
+    {
+        "id": "ui_log_template",
+        "type": "ui_template",
+        "z": "f1a2b3c4",
+        "group": "ui_group_log",
+        "name": "Serial Log",
+        "order": 1,
+        "width": "12",
+        "height": "12",
+        "format": "<div ng-cloak style=\"height:100%\">\n    <pre id=\"serial-log-output\"\n         style=\"font-size:14px;line-height:1.4;white-space:pre-wrap;word-break:break-all;\n                height:calc(100vh - 120px);overflow-y:auto;padding:8px;\n                user-select:text !important;-webkit-user-select:text !important;\n                -moz-user-select:text !important;-ms-user-select:text !important;\n                cursor:text;background:#1e1e1e;color:#d4d4d4;border-radius:4px\">\n{{msg.payload}}\n    </pre>\n</div>",
+        "storeOutMessages": false,
+        "fwdInMessages": false,
+        "templateScope": "local",
+        "x": 800,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "ui_group_log",
+        "type": "ui_group",
+        "name": "Serial Log (Live)",
+        "tab": "ui_tab_serial",
+        "order": 1,
+        "disp": true,
+        "width": "12",
+        "collapse": false
+    },
+    {
+        "id": "ui_tab_serial",
+        "type": "ui_tab",
+        "name": "ESP32 Serial Monitor",
+        "icon": "mi-serial",
+        "order": 1,
+        "disabled": false,
+        "hidden": false
+    }
+]
