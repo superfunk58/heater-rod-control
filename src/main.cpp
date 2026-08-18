@@ -106,10 +106,10 @@ const int PUMP_PIN = 23;      // GPIO23 - free pin, drives pump relay
 int ONEWIRE_PIN = 15;         // Default GPIO15 for DS18B20; adjustable via settings
 // I2C uses default Wire pins: SDA=GPIO21, SCL=GPIO22 (handled by DFRobot_GP8XXX)
 
-// Drain-compressor relay ("Entwässern Kompressor"). Active-HIGH (HIGH = relay
-// energized). MUST be LOW at boot — forced LOW as the very first action in
-// setup(). Web button triggers a single pulse of at most drainPulseMs, then
-// it returns to LOW automatically.
+// Drain-compressor relay ("Entwässern Kompressor"). SSR with LOW-level trigger
+// (LOW = relay ON, HIGH = relay OFF). MUST be HIGH at boot — forced HIGH as the
+// very first action in setup(). Web button triggers a single pulse of at most
+// drainPulseMs, then it returns to HIGH automatically.
 const int DRAIN_PIN = 13;     // GPIO13 - boot-safe output (no strapping role)
 volatile unsigned long drainPulseMs = 3000;  // requested pulse duration (ms), set by HTTP/MQTT
 
@@ -437,9 +437,11 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
   } else if (strcmp(topic, MQTT_TOPIC_RUNPUMP) == 0) {
     int tempnummer = atoi(buf);
     pumpmanualpower = (tempnummer > 0 && tempnummer < 2);
+    webLog("[MQTT] runpump=%d", tempnummer);
   } else if (strcmp(topic, MQTT_TOPIC_REGULATE) == 0) {
     int tempnummer = atoi(buf);
     regulating_power = (tempnummer > 0 && tempnummer < 2);
+    webLog("[MQTT] regulate=%d", tempnummer);
   } else if (strcmp(topic, MQTT_TOPIC_POWERDRAWSETPOINT) == 0) {
     powerdrawsetpoint = atoi(buf);
   } else if (strcmp(topic, MQTT_TOPIC_ZERO_FEED_TARGET) == 0) {
@@ -447,43 +449,49 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
     if (newVal >= 0 && newVal <= 10000) {
       ZERO_FEED_IN_TARGET = newVal;
       powerToConsume = ZERO_FEED_IN_TARGET - powerdrawnumber;
+      webLog("[MQTT] zero_feed_target=%d", newVal);
     }
   } else if (strcmp(topic, MQTT_TOPIC_MAX_HEATING_POWER) == 0) {
     int newMax = atoi(buf);
     if (newMax > 0 && newMax <= 2000) {
       MAX_HEATING_POWER = newMax;
+      webLog("[MQTT] max_heating_power=%d", newMax);
     }
   } else if (strcmp(topic, MQTT_TOPIC_MIN_POWER_THRESHOLD) == 0) {
     int newMin = atoi(buf);
     if (newMin >= 0 && newMin < 100) {
       MIN_POWER_THRESHOLD = newMin;
+      webLog("[MQTT] min_power_threshold=%d", newMin);
     }
   } else if (strcmp(topic, MQTT_TOPIC_DEADBAND) == 0) {
     int newDeadband = atoi(buf);
-    if (newDeadband >= 0 && newDeadband < 500) {  // Reasonable limits for deadband
+    if (newDeadband >= 0 && newDeadband < 500) {
       DEADBAND = newDeadband;
+      webLog("[MQTT] deadband=%d", newDeadband);
     }
   } else if (strcmp(topic, MQTT_TOPIC_PUMP_MIN_RUNTIME) == 0) {
     long newRuntimeSec = atoi(buf);
-    if (newRuntimeSec >= 5 && newRuntimeSec <= 300) {  // 5 seconds to 5 minutes
+    if (newRuntimeSec >= 5 && newRuntimeSec <= 300) {
       PUMP_MIN_RUNTIME_MS = (unsigned long)newRuntimeSec * 1000UL;
+      webLog("[MQTT] pump_min_runtime=%lds", newRuntimeSec);
     }
   } else if (strcmp(topic, MQTT_TOPIC_PUMP_CYCLE_INTERVAL) == 0) {
     long n2 = atoi(buf);
-    if (n2 >= 0 && n2 <= 1440) PUMP_CYCLE_INTERVAL_MIN = (unsigned long)n2;   // 0 = aus
+    if (n2 >= 0 && n2 <= 1440) { PUMP_CYCLE_INTERVAL_MIN = (unsigned long)n2; webLog("[MQTT] pump_cycle_interval=%ldmin", n2); }
   } else if (strcmp(topic, MQTT_TOPIC_PUMP_CYCLE_DURATION) == 0) {
     long n2 = atoi(buf);
-    if (n2 >= 0 && n2 <= 3600) PUMP_CYCLE_DURATION_SEC = (unsigned long)n2;
+    if (n2 >= 0 && n2 <= 3600) { PUMP_CYCLE_DURATION_SEC = (unsigned long)n2; webLog("[MQTT] pump_cycle_duration=%lds", n2); }
   } else if (strcmp(topic, MQTT_TOPIC_POWER_CHANGE_THRESHOLD) == 0) {
     int newThreshold = atoi(buf);
-    if (newThreshold >= 1 && newThreshold <= 100) {  // 1W to 100W
+    if (newThreshold >= 1 && newThreshold <= 100) {
       POWER_CHANGE_THRESHOLD = newThreshold;
+      webLog("[MQTT] power_change_threshold=%d", newThreshold);
     }
   } else if (strcmp(topic, MQTT_TOPIC_CORRECTION_GAIN) == 0) {
-    // Sent as integer percent 0..150 (e.g. 80 -> 0.8). Higher = faster but more oscillation.
     int newGainPct = atoi(buf);
     if (newGainPct >= 1 && newGainPct <= 150) {
       correctionGain = newGainPct / 100.0f;
+      webLog("[MQTT] correction_gain=%d%%", newGainPct);
     }
   } else if (strcmp(topic, MQTT_TOPIC_SOLAR_AC_POWER) == 0) {
     if (buf[0] != '\0') {
@@ -657,7 +665,7 @@ void failsafe_off() {
     heatingStoppedAt = 0;       // Nachlauf unterdrücken
     cyclePumpActive = false;    // Zyklus abbrechen
     if (dacNeedsWrite) GP8413.setDACOutVoltage(0, 0);
-    digitalWrite(PUMP_PIN, pumpmanualpower ? HIGH : LOW);  // respect manual state
+    digitalWrite(PUMP_PIN, pumpmanualpower ? LOW : HIGH);  // SSR low-level trigger: LOW=ON
 }
 
 // Helper: write DAC with rate limiting; retries on next call if blocked.
@@ -667,6 +675,7 @@ void applyDAC(int value, unsigned long now) {
   if (now - lastDACUpdateTime >= DAC_UPDATE_INTERVAL) {
     GP8413.setDACOutVoltage(pendingDACoutput, 0);
     lastDACUpdateTime = now;
+    webLog("[DAC] set to %d", pendingDACoutput);
     pendingDACoutput = -1;
   }
 }
@@ -682,11 +691,15 @@ void setup() {
   // issues. Repeatedly reconfiguring the TWDT here caused several rounds of
   // regressions (permanent hangs, boot-loops) without fixing anything.
 
-  // Drain-compressor relay: force LOW as the very FIRST action on boot. This
-  // must never be HIGH on power-up. Doing it before any other init minimizes
-  // the window in which the pin could float/glitch.
+  // Drain-compressor relay: force HIGH (OFF) as the very FIRST action on boot.
+  // SSR low-level trigger: HIGH = OFF. Internal pull-up enabled to keep the pin
+  // HIGH during the boot window before setup() runs. External 10k pull-up still
+  // recommended for the pre-bootloader window.
   pinMode(DRAIN_PIN, OUTPUT);
-  digitalWrite(DRAIN_PIN, LOW);
+  digitalWrite(DRAIN_PIN, HIGH);
+  // Enable internal pull-up: ESP32 Arduino core doesn't have OUTPUT_PULLUP,
+  // so we set the pin HIGH first, then enable pull-up via register.
+  gpio_pullup_en((gpio_num_t)DRAIN_PIN);
   drainActive = false;
 
   // Initialize status LED
@@ -838,6 +851,8 @@ void setup() {
   // the write because DACoutput (RAM) is already 0.
   GP8413.setDACOutVoltage(0, 0);
   pinMode(PUMP_PIN, OUTPUT);
+  digitalWrite(PUMP_PIN, HIGH);
+  gpio_pullup_en((gpio_num_t)PUMP_PIN);
   failsafe_off();
 
   // Limit WiFiClient TCP timeout to 2s (default is 30-60s).
@@ -904,7 +919,7 @@ void drainService() {
     drainCancelReq  = false;
     drainTriggerReq = false;
     if (drainActive) {
-      digitalWrite(DRAIN_PIN, LOW);
+      digitalWrite(DRAIN_PIN, HIGH);  // SSR low-level trigger: HIGH = OFF
       drainActive = false;
       drainOffPending = true;
       webLog("[Drain] Kompressor-Entwaesserung AUS (manuell)");
@@ -915,24 +930,19 @@ void drainService() {
   // Start a new pulse on request.
   if (drainTriggerReq) {
     drainTriggerReq = false;
-    digitalWrite(DRAIN_PIN, HIGH);
+    digitalWrite(DRAIN_PIN, LOW);   // SSR low-level trigger: LOW = ON
     drainActive  = true;
     drainStartMs = millis();
     webLog("[Drain] Kompressor-Entwaesserung AN (max %lus)", drainPulseMs / 1000);
     webserver_ssePushPending = true;
-    // Brief yield after relay energize: inductive load EMI can disrupt
-    // the W5500 SPI bus for a few ms. Use vTaskDelay(1 tick) instead of
-    // delay(10) to yield without blocking the full 10ms.
-    vTaskDelay(pdMS_TO_TICKS(10));
   }
-  // Enforce the maximum on-time: auto-return to LOW.
+  // Enforce the maximum on-time: auto-return to HIGH (OFF).
   if (drainActive && (millis() - drainStartMs >= drainPulseMs)) {
-    digitalWrite(DRAIN_PIN, LOW);
+    digitalWrite(DRAIN_PIN, HIGH);  // SSR low-level trigger: HIGH = OFF
     drainActive = false;
     drainOffPending = true;
     webLog("[Drain] Kompressor-Entwaesserung AUS (auto nach %lus)", drainPulseMs / 1000);
     webserver_ssePushPending = true;
-    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
@@ -1304,7 +1314,12 @@ void loop() {
   bool pumpShouldBeOn = autoOn || pumpmanualpower;
 
   // Apply pump state
-  digitalWrite(PUMP_PIN, pumpShouldBeOn ? HIGH : LOW);
+  static bool lastPumpState = false;
+  if (pumpShouldBeOn != lastPumpState) {
+    webLog("[Pump] %s", pumpShouldBeOn ? "ON" : "OFF");
+    lastPumpState = pumpShouldBeOn;
+  }
+  digitalWrite(PUMP_PIN, pumpShouldBeOn ? LOW : HIGH);  // SSR low-level trigger: LOW=ON
 
   // Any pump activity (manual/auto/cycle) resets the cycle timer: next scheduled
   // cycle runs PUMP_CYCLE_INTERVAL_MIN AFTER the last actual run, not on a
@@ -1326,6 +1341,7 @@ void loop() {
   if (webserver_configSavePending) {
     webserver_configSavePending = false;
     ConfigStore::save();
+    webLog("[Config] saved (UI triggered)");
   }
 
   // Drain deferred energy reset from httpd task (handleEnergyReset).
@@ -1367,6 +1383,30 @@ void loop() {
     sendupdate(true);
   }
 
+  // ================= Periodic verbose serial status (every 10s) ============
+  {
+    static unsigned long s_lastStatusPrint = 0;
+    unsigned long now = millis();
+    if (now - s_lastStatusPrint >= 10000) {
+      s_lastStatusPrint = now;
+      unsigned long upSec = now / 1000;
+      unsigned upH = upSec / 3600;
+      unsigned upM = (upSec / 60) % 60;
+      unsigned upS = upSec % 60;
+      webLog("[Status] up=%uh%um%us IP=%s mode=%s wattneeded=%d powerdraw=%d DAC=%d heating=%d pump=%d mqtt=%d heap=%u",
+             upH, upM, upS,
+             NetManager::activeIP(),
+             NetManager::activeIface(),
+             wattneeded,
+             powerdrawnumber,
+             DACoutput,
+             heating ? 1 : 0,
+             (pumpautocontrolled || pumpmanualpower) ? 1 : 0,
+             mqttClient.connected() ? 1 : 0,
+             (unsigned)ESP.getFreeHeap());
+    }
+  }
+
   // ================= MQTT (at end of loop — may block on zombie TCP) ======
   // Moved after regulation/pump/telemetry so a stalled MQTT socket only
   // delays MQTT communication, not the core control loop or SSE updates.
@@ -1399,6 +1439,7 @@ void loop() {
   if (g_mqttNeedsConfigSave) {
     g_mqttNeedsConfigSave = false;
     ConfigStore::save();
+    webLog("[Config] saved (MQTT triggered)");
   }
   if (g_mqttNeedsSendUpdate) {
     g_mqttNeedsSendUpdate = false;

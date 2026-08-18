@@ -572,6 +572,7 @@ size_t saveNow() {
 
   p.end();
   xSemaphoreGive(s_saveMutex);
+  webLog("[History] saved %u bytes (short=%u long=%u)", (unsigned)total, (unsigned)snap_count_short, (unsigned)snap_count_long);
   return total;
 }
 

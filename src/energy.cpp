@@ -1,4 +1,5 @@
 #include "energy.h"
+#include "webserver.h"
 #include <Preferences.h>
 #include <time.h>
 
@@ -50,6 +51,7 @@ void saveNow() {
   p.end();
   s_dirty = false;
   s_lastSaveMs = millis();
+  webLog("[Energy] saved (%.1f Wh this month, %.1f Wh lifetime)", s_cumulWh, s_lifetimeWh);
 }
 
 void begin() {
@@ -129,6 +131,7 @@ void resetAll() {
   s_curYear = 0; s_curMonth = 0;
   memset(s_chunks, 0, sizeof(s_chunks));
   saveNow();
+  webLog("[Energy] all counters reset");
 }
 
 double currentWh() {

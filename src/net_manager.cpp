@@ -196,7 +196,7 @@ static void lanVerifyService(unsigned long nowMs) {
       s_lanVerified = true;
       s_lastVerifyOkMs     = nowMs;
       s_livenessFailRounds = 0;
-      webLog("[Net] LAN verified (MQTT broker reachable via W5500) -> WiFi may be switched off");
+      webLog("[Net] LAN verified (MQTT broker reachable via W5500) -> WiFi OFF");
     }
     return;   // err != 0 (refused/unreachable) -> next attempt
   }
@@ -424,7 +424,7 @@ static void onNetEvent(arduino_event_id_t event, arduino_event_info_t info) {
       break;
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
       s_ssid[0] = '\0';
-      Log.printf("[Net] WiFi disconnected (reason=%d)\n", info.wifi_sta_disconnected.reason);
+      webLog("[Net] WiFi disconnected (reason=%d)", info.wifi_sta_disconnected.reason);
       break;
     case ARDUINO_EVENT_WIFI_STA_LOST_IP:
       Log.println("[Net] WiFi lost IP");

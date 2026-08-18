@@ -190,15 +190,10 @@ input:focus,select:focus{outline:none;border-color:#38bdf8}
 <div class="m"><div class="ml">WiFi Netzwerk</div><div id="vSsid" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">Uptime</div><div id="vUp" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">Reboots</div><div style="display:flex;gap:8px;align-items:center"><div id="vReboots" class="mv" style="font-size:13px">&mdash;</div><button id="bResetReboots" type="button" class="bm" style="padding:4px 8px;font-size:11px;border-radius:4px">Reset</button></div></div>
-<div class="m"><div class="ml">Brownouts</div><div id="vBrownouts" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">Letzter Start</div><div id="vBoot" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">Free Heap</div><div id="vHp" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">RSSI</div><div id="vRs" class="mv" style="font-size:13px">&mdash;</div></div>
 <div class="m"><div class="ml">Netzwerk-Modus</div><div id="vNetMode" class="mv" style="font-size:13px">&mdash;</div></div>
-<div class="m"><div class="ml">LAN verbunden</div><div id="vLan" class="mv" style="font-size:13px">&mdash;</div></div>
-<div class="m"><div class="ml">Netzwerk aktiv</div><div id="vNet" class="mv" style="font-size:13px">&mdash;</div></div>
-<div class="m"><div class="ml">Letzter NTP-Ping</div><div id="vNtpAge" class="mv" style="font-size:13px">&mdash;</div></div>
-<div class="m"><div class="ml">Temp-Sensoren</div><div id="vTempSensorCount" class="mv" style="font-size:13px;color:#38bdf8">&mdash;</div></div>
 </div>
 <div class="row" style="margin-top:14px">
 <button id="bReboot" type="button" class="bd">Neustart</button>
@@ -469,10 +464,6 @@ function render(s) {
   if (s.wifiSSID !== undefined) $('vSsid').textContent = s.wifiSSID;
   if (s.uptime !== undefined) $('vUp').textContent = fmtUp(s.uptime);
   if (s.rebootCount !== undefined) $('vReboots').textContent = s.rebootCount;
-  if (s.brownoutCount !== undefined) {
-    $('vBrownouts').textContent = s.brownoutCount;
-    $('vBrownouts').className = 'mv ' + (s.brownoutCount > 0 ? 'r' : 'g');
-  }
   if (s.bootEpoch !== undefined) {
     $('vBoot').textContent = s.bootEpoch > 0
       ? new Date(s.bootEpoch * 1000).toLocaleString('de-DE')
@@ -481,24 +472,6 @@ function render(s) {
   if (s.heap !== undefined) $('vHp').textContent = s.heap + ' B';
   if (s.rssi !== undefined) $('vRs').textContent = s.rssi + ' dBm';
   if (s.netMode !== undefined) $('vNetMode').textContent = s.netMode.toUpperCase();
-  if (s.lanConnected !== undefined) {
-    $('vLan').textContent = s.lanConnected ? 'Ja' : 'Nein';
-    $('vLan').style.color = s.lanConnected ? '#4ade80' : '#94a3b8';
-  }
-  if (s.netConnected !== undefined) {
-    $('vNet').textContent = s.netConnected ? 'Ja' : 'Nein';
-    $('vNet').style.color = s.netConnected ? '#4ade80' : '#f87171';
-  }
-  if (s.ntpProbeAge !== undefined) {
-    if (s.ntpProbeAge < 0) {
-      $('vNtpAge').textContent = 'noch nie';
-      $('vNtpAge').style.color = '#94a3b8';
-    } else {
-      $('vNtpAge').textContent = 'vor ' + s.ntpProbeAge + ' s';
-      $('vNtpAge').style.color = s.ntpProbeAge < 180 ? '#4ade80' : '#fbbf24';
-    }
-  }
-  if (s.temp_sensor_count !== undefined) $('vTempSensorCount').textContent = s.temp_sensor_count + ' gefunden';
   if (s.onewirePin !== undefined) {
     $('vTempBusPin').textContent = 'GPIO' + s.onewirePin;
   }
@@ -606,26 +579,9 @@ function render(s) {
     else if (s.volActive) { vst.textContent = '⚠️ Volatil – Heizung blockiert. Bereich: ' + s.powerRange + ' W · Mittel: ' + s.smoothedPowerdraw + ' W'; vst.style.color='#f87171'; }
     else { vst.textContent = '✓ Stabil. Bereich: ' + s.powerRange + ' W · Mittel: ' + s.smoothedPowerdraw + ' W'; vst.style.color='#4ade80'; }
   }
-  // Drain relay status
+  // Drain relay status — buttons always enabled (non-blocking drain)
   if (s.drainActive !== undefined) {
-    const btn1s = $('bDrain1s');
-    const btn2s = $('bDrain2s');
-    const btn3s = $('bDrain3s');
-    const btn10s = $('bDrain10s');
-    const btnOff = $('bDrainOff');
-    if (s.drainActive) {
-      btn1s.disabled = true;
-      btn2s.disabled = true;
-      btn3s.disabled = true;
-      btn10s.disabled = true;
-      btnOff.disabled = false;
-    } else {
-      btn1s.disabled = false;
-      btn2s.disabled = false;
-      btn3s.disabled = false;
-      btn10s.disabled = false;
-      btnOff.disabled = true;
-    }
+    $('bDrainOff').disabled = !s.drainActive;
   }
 }
 

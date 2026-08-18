@@ -295,19 +295,20 @@ static esp_err_t handleCmd(PsychicRequest *req) {
   const char *cmd = paramOr(req, "cmd", "");
   bool changed = false;
   bool persist = false;
-  if      (!strcmp(cmd, "pump_on"))      { pumpmanualpower = true;  changed = true; }
-  else if (!strcmp(cmd, "pump_off"))     { pumpmanualpower = false; changed = true; }
-  else if (!strcmp(cmd, "regulate_on"))  { regulating_power = true;  changed = true; persist = true; }
-  else if (!strcmp(cmd, "regulate_off")) { regulating_power = false; changed = true; persist = true; }
+  if      (!strcmp(cmd, "pump_on"))      { pumpmanualpower = true;  changed = true; webLog("[UI] cmd: pump_on"); }
+  else if (!strcmp(cmd, "pump_off"))     { pumpmanualpower = false; changed = true; webLog("[UI] cmd: pump_off"); }
+  else if (!strcmp(cmd, "regulate_on"))  { regulating_power = true;  changed = true; persist = true; webLog("[UI] cmd: regulate_on"); }
+  else if (!strcmp(cmd, "regulate_off")) { regulating_power = false; changed = true; persist = true; webLog("[UI] cmd: regulate_off"); }
   else if (!strcmp(cmd, "drain_on")) {
     int durSec = atoi(paramOr(req, "dur", "3"));
     if (durSec < 1 || durSec > 60) durSec = 3;  // clamp to 1-60 seconds
     drainPulseMs = durSec * 1000;
     drainTriggerReq = true;
     changed = true;
+    webLog("[UI] cmd: drain_on (%ds)", durSec);
   }
-  else if (!strcmp(cmd, "drain_off"))    { drainCancelReq  = true;  changed = true; }
-  else { return req->reply(400, "text/plain", "unknown cmd"); }
+  else if (!strcmp(cmd, "drain_off"))    { drainCancelReq  = true;  changed = true; webLog("[UI] cmd: drain_off"); }
+  else { webLog("[UI] cmd: unknown '%s'", cmd); return req->reply(400, "text/plain", "unknown cmd"); }
 
   if (persist) webserver_configSavePending = true;  // deferred to loop task
   if (changed) webserver_ssePushPending = true;
@@ -590,9 +591,10 @@ static esp_err_t handleConfig(PsychicRequest *req) {
   if (local.hasLanDhcp) netChanged |= (local.lanDhcp != LAN_DHCP);
 
   if (netChanged) {
-    webLog("[Net] config changed - manual reboot required to apply new interface settings");
+    webLog("[UI] config: network settings changed - manual reboot required");
     History::saveNow();
   }
+  webLog("[UI] config saved (fields updated)");
 
   // Atomically publish the parsed local config to the loop task. The mutex
   // keeps this race-free against applyPendingConfig() in main.cpp.
@@ -637,6 +639,7 @@ static esp_err_t handleParams(PsychicRequest *req) {
 }
 
 static esp_err_t handleReboot(PsychicRequest *req) {
+  webLog("[UI] reboot requested");
   History::saveNow();       // flush ring buffer before going down
   rebootPending = true;
   rebootAt = millis() + 500;
@@ -649,6 +652,7 @@ static esp_err_t handleTempScan(PsychicRequest *req) {
   // Request a non-blocking rescan on the loop task. The rescan enumerates
   // sensors and issues an async conversion (~250ms). Results appear in
   // scanList() on the next status poll — no need to block the httpd task.
+  webLog("[UI] temp scan requested");
   TempSensors::requestRescan();
   // Static: together with the 2 KB output buffer below this would overflow the
   // 4 KB httpd task stack. Safe: handlers are serialized on the httpd task.
@@ -715,12 +719,14 @@ static esp_err_t handleTempAssign(PsychicRequest *req) {
     any = true;
   }
   if (!any) return req->reply(400, "text/plain", "no fields");
+  webLog("[UI] temp sensor assignment updated");
   webserver_ssePushPending = true;
   return req->reply(200, "text/plain", "ok");
 }
 
 // POST /api/energy/reset -> alle Energie-Zähler löschen
 static esp_err_t handleEnergyReset(PsychicRequest *req) {
+  webLog("[UI] energy reset requested");
   webserver_energyResetPending = true;  // deferred to loop task (avoids race with Energy::tick)
   webserver_ssePushPending = true;
   return req->reply(200, "text/plain", "reset");
@@ -754,6 +760,7 @@ static esp_err_t handleEnergyInject(PsychicRequest *req) {
   webserver_pendingEnergyInject.wh    = (uint32_t)wh;
   webserver_energyInjectPending = true;
   webserver_ssePushPending = true;
+  webLog("[UI] energy inject %u Wh for %u-%02u", wh, year, month);
 
   return req->reply(200, "text/plain", "ok");
 }
@@ -782,12 +789,14 @@ static esp_err_t handleEnergyDelete(PsychicRequest *req) {
   webserver_pendingEnergyDelete.month = (uint8_t)month;
   webserver_energyDeletePending = true;
   webserver_ssePushPending = true;
+  webLog("[UI] energy delete month %u-%02u", year, month);
 
   return req->reply(200, "text/plain", "ok");
 }
 
 // POST /api/reboots/reset -> persistenten Reboot-Zähler auf 0 zurücksetzen
 static esp_err_t handleRebootsReset(PsychicRequest *req) {
+  webLog("[UI] reboot counter reset");
   resetRebootCounter();
   webserver_ssePushPending = true;
   return req->reply(200, "text/plain", "reset");
@@ -930,6 +939,7 @@ void webserver_begin() {
   History::registerRoutes(server);
 
   events.onOpen([](PsychicEventSourceClient *client) {
+    webLog("[SSE] client connected (total=%d)", events.count());
     // Hard cap on concurrent SSE clients: each open connection owns a LWIP
     // socket, and a slow/non-reading client can block events.send() for the
     // whole loop task. Drop the newest connection if we're already at the cap.
@@ -944,6 +954,29 @@ void webserver_begin() {
     webserver_ssePushPending = true;
   });
   server.on("/events", &events);
+
+  // Explicit favicon handler: serves from LittleFS, silences VFS error spam
+  // from the static handler trying multiple path variants.
+  server.on("/favicon.ico", HTTP_GET, [](PsychicRequest *req) -> esp_err_t {
+    if (LittleFS.exists("/www/favicon.ico")) {
+      File f = LittleFS.open("/www/favicon.ico", "r");
+      if (f) {
+        size_t sz = f.size();
+        if (sz > 0 && sz <= 2048) {
+          static uint8_t favBuf[2048];
+          f.read(favBuf, sz);
+          f.close();
+          PsychicResponse resp(req);
+          resp.setCode(200);
+          resp.setContentType("image/x-icon");
+          resp.setContent(favBuf, sz);
+          return resp.send();
+        }
+        f.close();
+      }
+    }
+    return req->reply(204, "text/plain", "");
+  });
 
   // Static assets from LittleFS. PsychicStaticFileHandler auto-serves
   // index.html for "/" and adds Cache-Control.

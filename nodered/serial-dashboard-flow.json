@@ -1,149 +1,614 @@
 [
-    {
-        "id": "serial_in",
-        "type": "serial in",
-        "z": "f1a2b3c4",
-        "name": "ESP32 Serial",
-        "serial": "serial_config",
-        "x": 120,
-        "y": 80,
-        "wires": [
-            ["split_lines", "raw_debug"]
-        ]
-    },
-    {
-        "id": "serial_config",
-        "type": "serial-port",
-        "z": "f1a2b3c4",
-        "serialport": "/dev/cu.wchusbserial21240",
-        "serialbaud": "115200",
-        "databits": "8",
-        "parity": "none",
-        "stopbits": "1",
-        "dtr": "none",
-        "rts": "none",
-        "cts": "none",
-        "dsr": "none",
-        "newline": "\\n",
-        "bin": "false",
-        "out": "char",
-        "addchar": "false",
-        "waitfor": "",
-        "request": "",
-        "requesttimeout": "10000",
-        "response": 0,
-        "enforce": true
-    },
-    {
-        "id": "raw_debug",
-        "type": "debug",
-        "z": "f1a2b3c4",
-        "name": "Raw Serial",
-        "active": true,
-        "tosidebar": true,
-        "console": false,
-        "tostatus": false,
-        "complete": "payload",
-        "targetType": "msg",
-        "statusVal": "",
-        "statusType": "auto",
-        "x": 380,
-        "y": 40,
-        "wires": []
-    },
-    {
-        "id": "split_lines",
-        "type": "function",
-        "z": "f1a2b3c4",
-        "name": "Parse & Tag",
-        "func": "// Buffer accumulation for partial lines\nif (!context.buffer) context.buffer = \"\";\ncontext.buffer += msg.payload;\n\nconst lines = context.buffer.split(\"\\n\");\ncontext.buffer = lines.pop(); // keep last partial\n\nconst out = [];\nfor (const line of lines) {\n    const trimmed = line.trim();\n    if (!trimmed) continue;\n\n    let category = \"info\";\n    if (/\\[Boot\\]/.test(trimmed))      category = \"boot\";\n    else if (/\\[Net\\]/.test(trimmed))   category = \"net\";\n    else if (/\\[Drain\\]/.test(trimmed)) category = \"drain\";\n    else if (/\\[Reg\\]/.test(trimmed))   category = \"reg\";\n    else if (/\\[DAC\\]/.test(trimmed))   category = \"dac\";\n    else if (/error|fail|brownout|panic|abort/i.test(trimmed)) category = \"error\";\n    else if (/warn/i.test(trimmed))     category = \"warn\";\n\n    out.push({\n        payload: trimmed,\n        topic: category,\n        timestamp: Date.now()\n    });\n}\nreturn [out];",
-        "outputs": 1,
-        "noerr": 0,
-        "x": 340,
-        "y": 100,
-        "wires": [
-            ["log_buffer"]
-        ]
-    },
-    {
-        "id": "log_buffer",
-        "type": "function",
-        "z": "f1a2b3c4",
-        "name": "Ring Buffer (200)",
-        "func": "if (msg.payload === '__CLEAR__') {\n    context.log = [];\n    return { payload: '' };\n}\nif (!context.log) context.log = [];\ncontext.log.push({\n    msg: msg.payload,\n    cat: msg.topic,\n    ts: msg.timestamp\n});\nif (context.log.length > 200) context.log.shift();\n\n// Build formatted text for the dashboard\nconst lines = context.log.slice(-50).map(e => {\n    const d = new Date(e.ts);\n    const ts = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();\n    const prefix = e.cat === 'error' ? '❌' : e.cat === 'warn' ? '⚠️' : 'ℹ️';\n    return `[${ts}] ${prefix} ${e.msg}`;\n});\n\nreturn { payload: lines.join(\"\\n\") };",
-        "outputs": 1,
-        "x": 560,
-        "y": 100,
-        "wires": [
-            ["ui_log_template"]
-        ]
-    },
-    {
-        "id": "ui_log_template",
-        "type": "ui_template",
-        "z": "f1a2b3c4",
-        "group": "ui_group_log",
-        "name": "Serial Log",
-        "order": 1,
-        "width": "12",
-        "height": "12",
-        "format": "<div ng-cloak style=\"height:100%\">\n    <pre id=\"serial-log-output\"\n         style=\"font-size:14px;line-height:1.4;white-space:pre-wrap;word-break:break-all;\n                height:calc(100vh - 120px);overflow-y:auto;padding:8px;\n                user-select:text !important;-webkit-user-select:text !important;\n                -moz-user-select:text !important;-ms-user-select:text !important;\n                cursor:text;background:#1e1e1e;color:#d4d4d4;border-radius:4px\">\n{{msg.payload}}\n    </pre>\n</div>",
-        "storeOutMessages": false,
-        "fwdInMessages": false,
-        "templateScope": "local",
-        "x": 800,
-        "y": 100,
-        "wires": []
-    },
-    {
-        "id": "ui_group_controls",
-        "type": "ui_group",
-        "name": "Controls",
-        "tab": "ui_tab_serial",
-        "order": 1,
-        "disp": false,
-        "width": "12",
-        "collapse": false
-    },
-    {
-        "id": "ui_group_log",
-        "type": "ui_group",
-        "name": "Serial Log (Live)",
-        "tab": "ui_tab_serial",
-        "order": 2,
-        "disp": true,
-        "width": "12",
-        "collapse": false
-    },
-    {
-        "id": "clear_button",
-        "type": "ui_button",
-        "z": "f1a2b3c4",
-        "group": "ui_group_controls",
-        "name": "Clear Log",
-        "order": 1,
-        "width": "3",
-        "height": "1",
-        "label": "Clear Log",
-        "color": "",
-        "bgcolor": "",
-        "icon": "fa-trash",
-        "payload": "__CLEAR__",
-        "payloadType": "str",
-        "topic": "",
-        "x": 340,
-        "y": 160,
-        "wires": [
-            ["log_buffer"]
-        ]
-    },
-    {
-        "id": "ui_tab_serial",
-        "type": "ui_tab",
-        "name": "ESP32 Serial Monitor",
-        "icon": "mi-serial",
-        "order": 1,
-        "disabled": false,
-        "hidden": false
-    }
+  {
+    "id": "serial_in",
+    "type": "serial in",
+    "z": "f1a2b3c4",
+    "name": "ESP32 Serial",
+    "serial": "serial_config",
+    "x": 120,
+    "y": 80,
+    "wires": [
+      [
+        "split_lines",
+        "raw_debug"
+      ]
+    ]
+  },
+  {
+    "id": "serial_config",
+    "type": "serial-port",
+    "z": "f1a2b3c4",
+    "serialport": "/dev/cu.wchusbserial21240",
+    "serialbaud": "115200",
+    "databits": "8",
+    "parity": "none",
+    "stopbits": "1",
+    "dtr": "none",
+    "rts": "none",
+    "cts": "none",
+    "dsr": "none",
+    "newline": "\\n",
+    "bin": "false",
+    "out": "char",
+    "addchar": "false",
+    "waitfor": "",
+    "request": "",
+    "requesttimeout": "10000",
+    "response": 0,
+    "enforce": true
+  },
+  {
+    "id": "raw_debug",
+    "type": "debug",
+    "z": "f1a2b3c4",
+    "name": "Raw Serial",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 380,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "split_lines",
+    "type": "function",
+    "z": "f1a2b3c4",
+    "name": "Parse & Tag",
+    "func": "// Buffer accumulation for partial lines\nif (!context.buffer) context.buffer = \"\";\ncontext.buffer += msg.payload;\n\nconst lines = context.buffer.split(\"\\n\");\ncontext.buffer = lines.pop(); // keep last partial\n\nconst out = [];\nfor (const line of lines) {\n    const trimmed = line.trim();\n    if (!trimmed) continue;\n\n    let category = \"info\";\n    if (/\\[Boot\\]/.test(trimmed))      category = \"boot\";\n    else if (/\\[Net\\]/.test(trimmed))   category = \"net\";\n    else if (/\\[Drain\\]/.test(trimmed)) category = \"drain\";\n    else if (/\\[Reg\\]/.test(trimmed))   category = \"reg\";\n    else if (/\\[DAC\\]/.test(trimmed))   category = \"dac\";\n    else if (/error|fail|brownout|panic|abort/i.test(trimmed)) category = \"error\";\n    else if (/warn/i.test(trimmed))     category = \"warn\";\n\n    out.push({\n        payload: trimmed,\n        topic: category,\n        timestamp: Date.now()\n    });\n}\nreturn [out];",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 340,
+    "y": 100,
+    "wires": [
+      [
+        "log_buffer"
+      ]
+    ]
+  },
+  {
+    "id": "log_buffer",
+    "type": "function",
+    "z": "f1a2b3c4",
+    "name": "Ring Buffer (200)",
+    "func": "if (msg.payload === '__CLEAR__') {\n    context.log = [];\n    return { payload: '' };\n}\nif (!context.log) context.log = [];\ncontext.log.push({\n    msg: msg.payload,\n    cat: msg.topic,\n    ts: msg.timestamp\n});\nif (context.log.length > 200) context.log.shift();\n\n// Build formatted text for the dashboard\nconst lines = context.log.slice(-50).map(e => {\n    const d = new Date(e.ts);\n    const ts = d.toLocaleDateString() + ' ' + d.toLocaleTimeString();\n    const prefix = e.cat === 'error' ? '\u274c' : e.cat === 'warn' ? '\u26a0\ufe0f' : '\u2139\ufe0f';\n    return `[${ts}] ${prefix} ${e.msg}`;\n});\n\nreturn { payload: lines.join(\"\\n\") };",
+    "outputs": 1,
+    "x": 560,
+    "y": 100,
+    "wires": [
+      [
+        "ui_log_template"
+      ]
+    ]
+  },
+  {
+    "id": "ui_log_template",
+    "type": "ui_template",
+    "z": "f1a2b3c4",
+    "group": "ui_group_log",
+    "name": "Serial Log",
+    "order": 1,
+    "width": "12",
+    "height": "12",
+    "format": "<div ng-cloak style=\"height:100%\">\n    <pre id=\"serial-log-output\"\n         style=\"font-size:14px;line-height:1.4;white-space:pre-wrap;word-break:break-all;\n                height:calc(100vh - 120px);overflow-y:auto;padding:8px;\n                user-select:text !important;-webkit-user-select:text !important;\n                -moz-user-select:text !important;-ms-user-select:text !important;\n                cursor:text;background:#1e1e1e;color:#d4d4d4;border-radius:4px\">\n{{msg.payload}}\n    </pre>\n</div>",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "templateScope": "local",
+    "x": 800,
+    "y": 100,
+    "wires": []
+  },
+  {
+    "id": "ui_group_controls",
+    "type": "ui_group",
+    "name": "Controls",
+    "tab": "ui_tab_serial",
+    "order": 1,
+    "disp": false,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "ui_group_log",
+    "type": "ui_group",
+    "name": "Serial Log (Live)",
+    "tab": "ui_tab_serial",
+    "order": 2,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "clear_button",
+    "type": "ui_button",
+    "z": "f1a2b3c4",
+    "group": "ui_group_controls",
+    "name": "Clear Log",
+    "order": 1,
+    "width": "3",
+    "height": "1",
+    "label": "Clear Log",
+    "color": "",
+    "bgcolor": "",
+    "icon": "fa-trash",
+    "payload": "__CLEAR__",
+    "payloadType": "str",
+    "topic": "",
+    "x": 340,
+    "y": 160,
+    "wires": [
+      [
+        "log_buffer"
+      ]
+    ]
+  },
+  {
+    "id": "ui_tab_serial",
+    "type": "ui_tab",
+    "name": "ESP32 Serial Monitor",
+    "icon": "mi-serial",
+    "order": 1,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "reboot_btn",
+    "type": "ui_button",
+    "z": "f1a2b3c4",
+    "group": "ui_group_controls",
+    "name": "Reboot ESP32",
+    "order": 2,
+    "width": "3",
+    "height": "1",
+    "label": "Reboot ESP32",
+    "color": "#ffffff",
+    "bgcolor": "#dc2626",
+    "icon": "fa-power-off",
+    "payload": "stop",
+    "payloadType": "str",
+    "topic": "",
+    "x": 120,
+    "y": 220,
+    "wires": [
+      [
+        "get_flows_reboot"
+      ]
+    ]
+  },
+  {
+    "id": "get_flows_reboot",
+    "type": "http request",
+    "z": "f1a2b3c4",
+    "name": "GET /flows (stop)",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": false,
+    "url": "http://localhost:1880/flows",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecure": true,
+    "authType": "",
+    "sendErr": false,
+    "headers": [],
+    "x": 310,
+    "y": 220,
+    "wires": [
+      [
+        "toggle_stop_reboot"
+      ]
+    ]
+  },
+  {
+    "id": "toggle_stop_reboot",
+    "type": "function",
+    "z": "f1a2b3c4",
+    "name": "Disable serial_in",
+    "func": "const flows = Array.isArray(msg.payload) ? msg.payload : (msg.payload.flows || []);\nconst rev = msg.payload.revision;\nconst updated = flows.map(n => {\n    if (n.id === 'serial_in') return Object.assign({}, n, { disabled: true });\n    return n;\n});\nreturn { payload: { flows: updated, revision: rev }, headers: { 'Content-Type': 'application/json', 'Node-RED-Deployment-Type': 'nodes' } };",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 520,
+    "y": 220,
+    "wires": [
+      [
+        "post_stop_reboot"
+      ]
+    ]
+  },
+  {
+    "id": "post_stop_reboot",
+    "type": "http request",
+    "z": "f1a2b3c4",
+    "name": "POST /flows (stop)",
+    "method": "POST",
+    "ret": "txt",
+    "paytoqs": false,
+    "url": "http://localhost:1880/flows",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecure": true,
+    "authType": "",
+    "sendErr": false,
+    "headers": [],
+    "x": 730,
+    "y": 220,
+    "wires": [
+      [
+        "reboot_delay"
+      ]
+    ]
+  },
+  {
+    "id": "reboot_delay",
+    "type": "delay",
+    "z": "f1a2b3c4",
+    "name": "Wait 1s",
+    "pauseType": "delay",
+    "timeout": "1",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 930,
+    "y": 220,
+    "wires": [
+      [
+        "reboot_exec"
+      ]
+    ]
+  },
+  {
+    "id": "reboot_exec",
+    "type": "exec",
+    "z": "f1a2b3c4",
+    "name": "Hard Reset via esptool",
+    "command": "python3 -m esptool --port /dev/ttyUSB1 --baud 115200 --before default-reset --after hard-reset run",
+    "addpay": false,
+    "append": "",
+    "useSpawn": "false",
+    "timer": "10",
+    "winHide": false,
+    "oldrc": false,
+    "x": 1130,
+    "y": 220,
+    "wires": [
+      [],
+      [],
+      [
+        "start_after_reboot"
+      ]
+    ]
+  },
+  {
+    "id": "start_after_reboot",
+    "type": "delay",
+    "z": "f1a2b3c4",
+    "name": "Wait 3s",
+    "pauseType": "delay",
+    "timeout": "3",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 280,
+    "y": 340,
+    "wires": [
+      [
+        "get_flows_start_auto"
+      ]
+    ]
+  },
+  {
+    "id": "get_flows_start_auto",
+    "type": "http request",
+    "z": "f1a2b3c4",
+    "name": "GET /flows (start)",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": false,
+    "url": "http://localhost:1880/flows",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecure": true,
+    "authType": "",
+    "sendErr": false,
+    "headers": [],
+    "x": 470,
+    "y": 340,
+    "wires": [
+      [
+        "toggle_start_auto"
+      ]
+    ]
+  },
+  {
+    "id": "toggle_start_auto",
+    "type": "function",
+    "z": "f1a2b3c4",
+    "name": "Enable serial_in",
+    "func": "const flows = Array.isArray(msg.payload) ? msg.payload : (msg.payload.flows || []);\nconst rev = msg.payload.revision;\nconst updated = flows.map(n => {\n    if (n.id === 'serial_in') return Object.assign({}, n, { disabled: false });\n    return n;\n});\nreturn { payload: { flows: updated, revision: rev }, headers: { 'Content-Type': 'application/json', 'Node-RED-Deployment-Type': 'nodes' } };",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 680,
+    "y": 340,
+    "wires": [
+      [
+        "post_start_auto"
+      ]
+    ]
+  },
+  {
+    "id": "post_start_auto",
+    "type": "http request",
+    "z": "f1a2b3c4",
+    "name": "POST /flows (start)",
+    "method": "POST",
+    "ret": "txt",
+    "paytoqs": false,
+    "url": "http://localhost:1880/flows",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecure": true,
+    "authType": "",
+    "sendErr": false,
+    "headers": [],
+    "x": 890,
+    "y": 340,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "stop_mon_btn",
+    "type": "ui_button",
+    "z": "f1a2b3c4",
+    "group": "ui_group_controls",
+    "name": "Stop Monitor",
+    "order": 5,
+    "width": "3",
+    "height": "1",
+    "label": "Stop Monitor",
+    "color": "#ffffff",
+    "bgcolor": "#991b1b",
+    "icon": "fa-stop",
+    "payload": "stop",
+    "payloadType": "str",
+    "topic": "",
+    "x": 120,
+    "y": 480,
+    "wires": [
+      [
+        "get_flows_stop"
+      ]
+    ]
+  },
+  {
+    "id": "start_mon_btn",
+    "type": "ui_button",
+    "z": "f1a2b3c4",
+    "group": "ui_group_controls",
+    "name": "Start Monitor",
+    "order": 6,
+    "width": "3",
+    "height": "1",
+    "label": "Start Monitor",
+    "color": "#ffffff",
+    "bgcolor": "#16a34a",
+    "icon": "fa-play",
+    "payload": "start",
+    "payloadType": "str",
+    "topic": "",
+    "x": 120,
+    "y": 540,
+    "wires": [
+      [
+        "get_flows_start"
+      ]
+    ]
+  },
+  {
+    "id": "get_flows_stop",
+    "type": "http request",
+    "z": "f1a2b3c4",
+    "name": "GET /flows",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": false,
+    "url": "http://localhost:1880/flows",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecure": true,
+    "authType": "",
+    "sendErr": false,
+    "headers": [],
+    "x": 300,
+    "y": 480,
+    "wires": [
+      [
+        "toggle_serial_node"
+      ]
+    ]
+  },
+  {
+    "id": "get_flows_start",
+    "type": "http request",
+    "z": "f1a2b3c4",
+    "name": "GET /flows",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": false,
+    "url": "http://localhost:1880/flows",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecure": true,
+    "authType": "",
+    "sendErr": false,
+    "headers": [],
+    "x": 300,
+    "y": 540,
+    "wires": [
+      [
+        "toggle_serial_node"
+      ]
+    ]
+  },
+  {
+    "id": "toggle_serial_node",
+    "type": "function",
+    "z": "f1a2b3c4",
+    "name": "Toggle serial_in disabled",
+    "func": "const action = msg.payload;\nconst flows = Array.isArray(msg.payload) ? msg.payload : (msg.payload.flows || []);\nconst rev = msg.payload.revision;\nlet found = false;\nconst updated = flows.map(n => {\n    if (n.id === 'serial_in') {\n        found = true;\n        return Object.assign({}, n, { disabled: (action === 'stop') });\n    }\n    return n;\n});\nif (!found) return { payload: 'serial_in node not found' };\nreturn { payload: { flows: updated, revision: rev }, headers: { 'Content-Type': 'application/json', 'Node-RED-Deployment-Type': 'nodes' } };",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 520,
+    "y": 510,
+    "wires": [
+      [
+        "post_flows"
+      ]
+    ]
+  },
+  {
+    "id": "post_flows",
+    "type": "http request",
+    "z": "f1a2b3c4",
+    "name": "POST /flows",
+    "method": "POST",
+    "ret": "txt",
+    "paytoqs": false,
+    "url": "http://localhost:1880/flows",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecure": true,
+    "authType": "",
+    "sendErr": false,
+    "headers": [],
+    "x": 740,
+    "y": 510,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "inject_clear",
+    "type": "inject",
+    "z": "f1a2b3c4",
+    "name": "Inject: Clear Log",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "__CLEAR__",
+    "payloadType": "str",
+    "x": 120,
+    "y": 160,
+    "wires": [
+      [
+        "log_buffer"
+      ]
+    ]
+  },
+  {
+    "id": "inject_reboot",
+    "type": "inject",
+    "z": "f1a2b3c4",
+    "name": "Inject: Reboot",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "stop",
+    "payloadType": "str",
+    "x": 120,
+    "y": 260,
+    "wires": [
+      [
+        "get_flows_reboot"
+      ]
+    ]
+  },
+  {
+    "id": "inject_stop_mon",
+    "type": "inject",
+    "z": "f1a2b3c4",
+    "name": "Inject: Stop Monitor",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "stop",
+    "payloadType": "str",
+    "x": 120,
+    "y": 440,
+    "wires": [
+      [
+        "get_flows_stop"
+      ]
+    ]
+  },
+  {
+    "id": "inject_start_mon",
+    "type": "inject",
+    "z": "f1a2b3c4",
+    "name": "Inject: Start Monitor",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "start",
+    "payloadType": "str",
+    "x": 120,
+    "y": 580,
+    "wires": [
+      [
+        "get_flows_start"
+      ]
+    ]
+  }
 ]
