@@ -799,7 +799,9 @@ void setup() {
 
   ArduinoOTA.setHostname("Heizstabsteuerung");
   ArduinoOTA.onStart([]() {
-    Log.println("[OTA] Start");
+    bool isFS = (ArduinoOTA.getCommand() == U_SPIFFS);
+    Log.println(isFS ? "[OTA] Start (FS)" : "[OTA] Start (FW)");
+    ArduinoOTA.setRebootOnSuccess(!isFS);  // reboot on firmware, not on FS
     webserver_pauseSSE = true;  // stop SSE traffic during upload
     // NOTE: Do NOT call mqttClient.disconnect() here from the OTA callback.
     // PubSubClient is not reentrant-safe; disconnecting from this context
@@ -809,6 +811,12 @@ void setup() {
   ArduinoOTA.onEnd([]() {
     Log.println("[OTA] End");
     webserver_pauseSSE = false;  // resume SSE
+    // Remount LittleFS so new files are visible without reboot
+    if (ArduinoOTA.getCommand() == U_SPIFFS) {
+      LittleFS.end();
+      LittleFS.begin(true);
+      Log.println("[OTA] FS update done — LittleFS remounted, no reboot");
+    }
   });
   ArduinoOTA.onError([](ota_error_t error) {
     webserver_pauseSSE = false;  // resume SSE on error
