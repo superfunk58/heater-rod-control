@@ -8,7 +8,7 @@
 namespace TempSensors {
 
 // ----- Konfiguration -----
-static constexpr uint32_t REQUEST_INTERVAL_MS = 5000;   // alle 5s ein neuer Read
+static constexpr uint32_t REQUEST_INTERVAL_MS = 10000;  // alle 10s ein neuer Read
 static constexpr float    T_MIN_VALID         = -55.0f;  // DS18B20 spec: -55°C to +125°C
 static constexpr float    T_MAX_VALID         = 100.0f;
 static constexpr float    T_POWER_ON_DEFAULT  = 85.0f;   // DS18B20 power-on scratchpad default
@@ -143,7 +143,7 @@ void begin(uint8_t pin) {
   delay(10);
 
   s_dt->begin();
-  s_dt->setResolution(12);            // 12-bit = 750ms conversion, 0.0625°C precision
+  s_dt->setResolution(10);            // 10-bit = 187.5ms conversion, 0.25°C precision
   s_dt->setWaitForConversion(true);   // blocking mode — library handles conversion timing
   webLog("[Temp] DallasTemperature library init done (blocking mode)");
   loadMapping();
@@ -217,8 +217,7 @@ void tick() {
   if (now - s_lastReadMs < REQUEST_INTERVAL_MS) return;
   s_lastReadMs = now;
 
-  // Blocking conversion: the DallasTemperature library handles all timing
-  // internally. With 10-bit resolution this blocks ~187.5ms.
+  // Blocking conversion: 10-bit resolution blocks ~187.5ms.
   s_dt->requestTemperatures();
 
   // Read all known sensors by ROM address.
