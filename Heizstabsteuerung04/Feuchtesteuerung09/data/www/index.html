@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Feuchtesteuerung</title>
+<link rel="stylesheet" href="/style.css?v=6">
+</head>
+<body>
+<div class="shell">
+
+<div class="datetime-bar" id="datetimeBar">--</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="status" onclick="showTab('status')">Status</div>
+  <div class="tab" data-tab="verlauf" onclick="showTab('verlauf')">Verlauf</div>
+  <div class="tab" data-tab="settings" onclick="showTab('settings')">Einstellungen</div>
+  <div class="tab" data-tab="schedule" onclick="showTab('schedule')">Zeitplan</div>
+  <div class="tab" data-tab="energy" onclick="showTab('energy')">Energie</div>
+  <div class="tab" data-tab="sensors" onclick="showTab('sensors')">Sensoren</div>
+  <div class="tab" data-tab="wifi" onclick="showTab('wifi')">Netzwerk</div>
+  <div class="tab" data-tab="firmware" onclick="showTab('firmware')">Firmware</div>
+  <a href="/simple.html" class="tab" style="text-decoration:none;">Einfach</a>
+</div>
+
+<!-- Status Tab -->
+<div id="tab-status" class="tab-content active">
+
+  <div class="card"><div class="title">Status</div><div class="grid">
+    <div class="metric"><div class="metric-label">Raumtemperatur</div><div id="tempValue" class="metric-value">-</div></div>
+    <div class="metric"><div class="metric-label">Raumfeuchte</div><div id="humValue" class="metric-value">-</div></div>
+    <div class="metric"><div class="metric-label">Luft vor Lüfter</div><div id="tempBeforeFanValue" class="metric-value">-</div></div>
+    <div class="metric"><div class="metric-label">Luft nach Heizung</div><div id="tempAfterHeaterValue" class="metric-value">-</div></div>
+  </div></div>
+
+  <div class="led-bar" id="ledBar">
+    <div class="led" title="Grün = Lüfter dreht sich gerade"><div class="led-dot" id="ledFan"></div>Lüfter</div>
+    <div class="led" title="Grün = Heizung ist eingeschaltet (nur im EINBLASEN-Modus)"><div class="led-dot" id="ledHeater"></div>Heizung</div>
+    <div class="led" title="Grün = Heizung ist in den Einstellungen aktiviert"><div class="led-dot" id="ledHeaterEnabled"></div>Heizung erlaubt</div>
+    <div class="led" title="Grün = Feuchte liegt über dem AUS-Schwellwert, Lüfter wird benötigt"><div class="led-dot" id="ledHumidity"></div>Feuchte</div>
+    <div class="led" title="Grün = Überhitzungsschutz aktiv: Temperatur nach Heizung zu hoch, Lüfter wird erzwungen"><div class="led-dot" id="ledTempSafety"></div>Überhitzungsschutz</div>
+    <div class="led" title="Grün = Lüfter läuft im ABSAUGEN-Modus (Abluft). Grau = EINBLASEN (Zuluft)"><div class="led-dot" id="ledDirection"></div>Richtung</div>
+    <div class="led" title="Grün = Richtungswechsel läuft gerade (kurze Pause beim Umschalten)"><div class="led-dot" id="ledDirChange"></div>Richtungswechsel</div>
+    <div class="led" title="Grün = Wochenplan erlaubt aktuell den Betrieb. Grau = aktuelle Stunde ist im Zeitplan gesperrt"><div class="led-dot" id="ledSchedule"></div>Zeitplan</div>
+    <div class="led" title="Grün = Zyklischer Timer ist aktiviert (periodisches Einschalten unabhängig von Feuchte)"><div class="led-dot" id="ledCyclic"></div>Zyklisch</div>
+    <div class="led" title="Grün = Ein zyklischer Lauf ist gerade aktiv, Lüfter läuft durch Timer"><div class="led-dot" id="ledCyclicRun"></div>Zyklus läuft</div>
+    <div class="led" title="Grün = Manueller Modus aktiv, automatische Regelung ist übersteuert"><div class="led-dot" id="ledManual"></div>Manuell</div>
+    <div class="led" title="Grün = Manueller Timer läuft, nach Ablauf zurück zu AUTO"><div class="led-dot" id="ledManualTimer"></div>Timer</div>
+    <div class="led" title="Grün = Uhrzeit ist per NTP synchronisiert. Grau = keine Zeitsynchronisation"><div class="led-dot" id="ledNtp"></div>NTP</div>
+    <div class="led" title="Grün = Absaugen-Timer läuft, nach Ablauf automatisch zurück zu EINBLASEN"><div class="led-dot" id="ledAbsaugen"></div>Absaugen-Timer</div>
+    <div class="led" title="Grün = Feuchte sinkt zu langsam beim Lüften, Heizung wird erzwungen"><div class="led-dot" id="ledHumDescent"></div>Feuchte-Absinken</div>
+  </div>
+
+  <div class="countdown" id="cyclicCountdownMain" style="margin:8px 0;"></div>
+
+  <div class="card"><div class="title">Manuelle Steuerung</div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+      <button id="fanBtn" class="btn-large" type="button">Lüfter AUS</button>
+      <button id="heaterBtn" class="btn-large" type="button">Heizung AUS</button>
+      <button id="dirBtn" class="btn-large" type="button">↑ EINBLASEN</button>
+      <div class="field" style="grid-column:1/-1;">
+        <label>Lüftergeschwindigkeit: <span id="fanSpeedValue">75%</span></label>
+        <input type="range" id="fanSpeedSlider" min="25" max="100" value="75" class="speed-slider">
+        <button id="resetSpeedBtn" type="button" style="margin-top:10px;padding:8px 16px;background:linear-gradient(135deg,#6366f1,#4f46e5);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Standard</button>
+      </div>
+
+      <button id="autoToggleBtn" class="btn-large" type="button" style="background:linear-gradient(135deg,#22c55e,#16a34a)">Automatik AN</button>
+      <button id="bathPauseBtn" class="btn-large" type="button" style="background:linear-gradient(135deg,#a855f7,#7c3aed)">Badepause</button>
+      <button id="absaugenBtn" class="btn-large" type="button" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9)">Absaugen-Zyklus</button>
+      <div class="field" style="grid-column:1/-1;">
+        <label>Badepause Dauer [min]: <span id="bathPauseMinsValue">30</span></label>
+        <input type="range" id="bathPauseMinsSlider" min="1" max="120" value="30" step="1" class="speed-slider">
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Verlauf Tab -->
+<div id="tab-verlauf" class="tab-content">
+
+  <div class="card"><div class="title">Verlauf - Langzeit</div>
+    <div style="position:relative;">
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:12px;color:#64748b;">Zeitfenster:</label>
+        <select id="chart1TimeMins" style="padding:4px 8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px;">
+          <option value="60">1 Stunde</option>
+          <option value="120">2 Stunden</option>
+          <option value="240" selected>4 Stunden</option>
+          <option value="480">8 Stunden</option>
+          <option value="720">12 Stunden</option>
+          <option value="1440">24 Stunden</option>
+          <option value="2880">48 Stunden</option>
+          <option value="4320">72 Stunden</option>
+        </select>
+        <label style="font-size:12px;color:#64748b;margin-left:8px;">Höhe:</label>
+        <input type="range" id="chartHeightSlider" min="200" max="600" value="350" step="50" style="flex:1;height:6px;min-width:80px;">
+        <span id="chartHeightValue" style="font-size:12px;color:#94a3b8;min-width:40px;">350px</span>
+      </div>
+      <canvas id="humChart"></canvas>
+      <div id="chartTooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(15,23,42,0.95);border:1px solid #334155;border-radius:6px;padding:8px 12px;font-size:12px;color:#e5e7eb;z-index:10;white-space:nowrap;"></div>
+    </div>
+  </div>
+
+  <div class="card"><div class="title">Verlauf - Kurzzeit</div>
+    <div style="position:relative;">
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:12px;color:#64748b;">Zeitfenster:</label>
+        <select id="chart2TimeMins" style="padding:4px 8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px;">
+          <option value="10">10 Minuten</option>
+          <option value="15">15 Minuten</option>
+          <option value="30" selected>30 Minuten</option>
+          <option value="60">1 Stunde</option>
+        </select>
+        <label style="font-size:12px;color:#64748b;margin-left:8px;">Höhe:</label>
+        <input type="range" id="chart2HeightSlider" min="200" max="600" value="300" step="50" style="flex:1;height:6px;min-width:80px;">
+        <span id="chart2HeightValue" style="font-size:12px;color:#94a3b8;min-width:40px;">300px</span>
+      </div>
+      <canvas id="humChart2"></canvas>
+      <div id="chart2Tooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(15,23,42,0.95);border:1px solid #334155;border-radius:6px;padding:8px 12px;font-size:12px;color:#e5e7eb;z-index:10;white-space:nowrap;"></div>
+    </div>
+  </div>
+
+  <div style="text-align:center;margin-top:12px;">
+    <a href="/history.csv" download="history.csv" style="display:inline-block;padding:10px 24px;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">&#x2B07; Verlaufsdaten als CSV herunterladen</a>
+  </div>
+
+</div>
+
+<!-- Settings Tab -->
+<div id="tab-settings" class="tab-content">
+
+  <div class="card"><div class="title">Regelung</div>
+    <form id="cfgForm">
+      <div class="field"><label>Feuchte EIN [%]</label><input type="number" step="0.1" name="humidity_on" id="cfg_humidity_on"><div class="field-hint">Lüfter startet automatisch, sobald die Raumfeuchte diesen Wert überschreitet. Typisch: 65-75% für Badezimmer.</div></div>
+      <div class="field"><label>Feuchte AUS [%]</label><input type="number" step="0.1" name="humidity_off" id="cfg_humidity_off"><div class="field-hint">Lüfter stoppt, wenn die Feuchte unter diesen Wert sinkt. Sollte 5-10% unter dem EIN-Wert liegen, um häufiges Ein/Aus zu vermeiden.</div></div>
+      <div class="field"><label>Heizung aktiviert</label><select name="heater_enabled" id="cfg_heater_enabled"><option value="true">Ja</option><option value="false">Nein</option></select><div class="field-hint">Erlaubt der Heizung, die Zuluft zu erwärmen. Nur aktiv im EINBLASEN-Modus. Bei "Nein" bleibt die Heizung immer aus.</div></div>
+      <div class="field"><label>Heizung EIN Diff [°C]</label><input type="number" step="0.5" name="heater_on_temp_diff" id="cfg_heater_on_temp_diff" min="-20" max="20"><div class="field-hint">Heizung schaltet EIN, wenn (Temp. vor Lüfter − Raumtemp.) kleiner als dieser Wert ist. Beispiel: Bei -5°C schaltet die Heizung ein, wenn die Zuluft 5°C kälter als der Raum ist.</div></div>
+      <div class="field"><label>Heizung AUS Diff [°C]</label><input type="number" step="0.5" name="heater_off_temp_diff" id="cfg_heater_off_temp_diff" min="-20" max="20"><div class="field-hint">Heizung schaltet AUS, wenn (Temp. vor Lüfter − Raumtemp.) größer als dieser Wert ist. Beispiel: Bei -2°C schaltet die Heizung aus, wenn die Zuluft nur noch 2°C kälter ist.</div></div>
+      <div class="field"><label>Lüfter Standard [%]</label><input type="number" name="fan_speed_percent" id="cfg_fan_speed_percent" min="0" max="100" step="5"><div class="field-hint">Normale Lüfterdrehzahl im EINBLASEN-Modus. 100% = volle Leistung, 50% = halbe Leistung. Niedrigere Werte sind leiser.</div></div>
+      <div class="field"><label>Lüfter Richtung</label><select name="fan_direction" id="cfg_fan_direction"><option value="true">Absaugen</option><option value="false">Einblasen</option></select><div class="field-hint">EINBLASEN = Frischluft von außen ins Bad. ABSAUGEN = Feuchte Luft nach außen. Standard ist EINBLASEN mit Heizung.</div></div>
+      <div class="field"><label>ABSAUGEN Dauer [s]</label><input type="number" name="absaugen_duration_secs" id="cfg_absaugen_duration_secs" min="10" max="3600" step="10"><div class="field-hint">Maximale Zeit im ABSAUGEN-Modus. Danach wechselt der Lüfter automatisch zurück zu EINBLASEN. Verhindert Dauerbetrieb im falschen Modus.</div></div>
+      <div class="field"><label>ABSAUGEN Drehzahl [%]</label><input type="number" name="absaugen_speed_percent" id="cfg_absaugen_speed_percent" min="0" max="100" step="5"><div class="field-hint">Separate Drehzahl für den ABSAUGEN-Modus. Oft höher als EINBLASEN, um Gerüche schnell zu entfernen.</div></div>
+      <div class="field"><label>Badepause Standard [min]</label><input type="number" name="bath_pause_mins" id="cfg_bath_pause_mins" min="1" max="120" step="1"><div class="field-hint">Dauer der Badepause: Lüfter und Heizung bleiben aus, damit es beim Baden/Duschen warm bleibt. Danach startet die Automatik wieder.</div></div>
+      <div class="field"><label>Heizung: Raum-Min [°C]</label><input type="number" step="0.5" name="heater_min_room_temp" id="cfg_heater_min_room_temp" min="0" max="30"><div class="field-hint">Zusätzliche Bedingung: Heizung nur EIN, wenn Raumtemperatur unter diesem Wert liegt. 0 = diese Bedingung ist deaktiviert.</div></div>
+      <div class="field"><label>Heizung: Max-Temp [°C]</label><input type="number" step="1" name="heater_max_temp" id="cfg_heater_max_temp" min="30" max="50"><div class="field-hint">Sicherheitsgrenze: Heizung schaltet sofort AUS, wenn die Temperatur nach der Heizung diesen Wert überschreitet. Schützt vor Überhitzung.</div></div>
+      <div class="field"><label>Überhitzungsschutz EIN [°C]</label><input type="number" step="0.5" name="temp_safety_diff" id="cfg_temp_safety_diff" min="2" max="30"><div class="field-hint">Notfall-Lüfter: Wenn (Temp. nach Heizung − Temp. vor Lüfter) diesen Wert erreicht, wird der Lüfter erzwungen, um Wärme abzuführen.</div></div>
+      <div class="field"><label>Überhitzungsschutz AUS [°C]</label><input type="number" step="0.5" name="temp_safety_hyst" id="cfg_temp_safety_hyst" min="0.5" max="10"><div class="field-hint">Hysterese für Notfall-Lüfter: Lüfter stoppt erst, wenn die Differenz um diesen Wert unter den EIN-Wert fällt. Verhindert Flattern.</div></div>
+      <div class="field"><label>MQTT Base Topic</label><input type="text" name="mqtt_base_topic" id="cfg_mqtt_base_topic"><div class="field-hint">Basis-Pfad für MQTT-Nachrichten, z.B. "luefter_bad_og". Status wird unter diesem Pfad veröffentlicht.</div></div>
+      <div class="field"><label>MQTT Intervall [s]</label><input type="number" name="mqtt_interval_secs" id="cfg_mqtt_interval_secs" min="1" max="300" step="1"><div class="field-hint">Wie oft der Status per MQTT gesendet wird. Niedrigere Werte = aktuellere Daten, aber mehr Netzwerkverkehr.</div></div>
+      <div class="field"><label>Feuchte-Absink Überwachung</label><select name="hum_descent_heater_enable" id="cfg_hum_descent_heater_enable"><option value="true">Aktiv</option><option value="false">Inaktiv</option></select><div class="field-hint">Überwacht, ob die Feuchte beim Lüften schnell genug sinkt. Falls nicht, wird die Heizung aktiviert, um die Trocknung zu beschleunigen.</div></div>
+      <div class="field"><label>Min. Feuchte-Abfall [%]</label><input type="number" step="0.1" name="hum_descent_min_drop" id="cfg_hum_descent_min_drop" min="0.1" max="20"><div class="field-hint">Erwarteter Feuchte-Abfall im Prüfzeitraum. Sinkt die Feuchte weniger, gilt das Lüften als ineffektiv und die Heizung wird aktiviert.</div></div>
+      <div class="field"><label>Feuchte-Prüfzeit [s]</label><input type="number" name="hum_descent_time_secs" id="cfg_hum_descent_time_secs" min="60" max="1800" step="30"><div class="field-hint">Zeitfenster für die Feuchte-Absink-Prüfung. Typisch 300s (5 min). Längere Zeiten sind toleranter gegenüber Schwankungen.</div></div>
+      <div class="field"><label>Manuell-Modus Dauer [s]</label><input type="number" id="manualDurationSetting" value="300" min="10" step="10"><div class="field-hint">Wie lange manuelle Eingriffe (Lüfter/Heizung-Buttons) aktiv bleiben, bevor die Automatik wieder übernimmt.</div></div>
+      <div style="margin-top:8px;"><button type="submit">Speichern</button></div>
+      <div id="cfgStatus" style="margin-top:8px;color:#22c55e;font-size:12px;"></div>
+    </form>
+  </div>
+
+  <div class="card"><div class="title">Firmware-Version</div>
+    <div id="firmwareInfo" style="font-size:14px;color:#64748b;line-height:1.5;">Lade...</div>
+  </div>
+
+</div>
+
+<!-- Schedule Tab -->
+<div id="tab-schedule" class="tab-content">
+
+  <div class="card"><div class="title">Wochenplan</div>
+    <div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;">
+      <label style="font-size:14px;">Zeitplan aktiv:</label>
+      <button id="schedEnableBtn" type="button" class="toggle-btn">INAKTIV</button>
+    </div>
+    <div style="overflow-x:auto;">
+      <table id="schedTable" style="border-collapse:collapse;width:100%;min-width:600px;">
+        <thead><tr><th style="padding:4px 2px;font-size:11px;color:#9ca3af;"></th></tr></thead>
+        <tbody id="schedBody"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button id="schedSaveBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#6366f1,#ec4899);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Speichern</button>
+      <button id="schedAllOnBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Alle AN</button>
+      <button id="schedAllOffBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#f97316,#ef4444);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Alle AUS</button>
+      <div id="schedStatus" style="padding:10px;color:#22c55e;font-size:12px;"></div>
+    </div>
+  </div>
+
+  <div class="card"><div class="title">Absaugen-Zyklus</div>
+    <div class="field-hint" style="margin-bottom:12px;">Periodisches Umschalten auf ABSAUGEN (Abluft). Nach Ablauf automatisch zurück zu EINBLASEN.</div>
+    <div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;">
+      <label style="font-size:14px;">Absaugen-Zyklus aktiv:</label>
+      <button id="absaugenCyclicEnableBtn" type="button" class="toggle-btn">INAKTIV</button>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+      <div class="field"><label>Pause zwischen Zyklen [min]</label><input type="number" id="absaugenCyclicInterval" min="1" max="480" step="1"><div class="field-hint">1-480 Minuten</div></div>
+      <div class="field"><label>Absaugen-Dauer [min]</label><input type="number" id="absaugenCyclicDuration" min="1" max="30" step="1"><div class="field-hint">1-30 Minuten</div></div>
+      <div class="field"><label>Startzeit</label><select id="absaugenCyclicStartMin"><option value="0">Volle Stunde (:00)</option><option value="15">Viertelstunde (:15)</option><option value="30">Halbe Stunde (:30)</option><option value="45">Dreiviertelstunde (:45)</option></select><div class="field-hint">Zyklen starten ab dieser Minute</div></div>
+    </div>
+    <div style="margin-top:8px;font-size:13px;color:#94a3b8;" id="absaugenCyclicCountdown"></div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button id="absaugenCyclicSaveBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#6366f1,#ec4899);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Speichern</button>
+      <button id="absaugenManualBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Absaugen jetzt starten</button>
+      <div id="absaugenCyclicStatus" style="padding:10px;color:#22c55e;font-size:12px;"></div>
+    </div>
+  </div>
+
+  <div class="card"><div class="title">Zyklischer Timer</div>
+    <div class="field-hint" style="margin-bottom:12px;">Lüfter schaltet periodisch ein, unabhängig von Feuchte. Nur aktiv wenn Wochenplan die aktuelle Stunde erlaubt.</div>
+    <div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;">
+      <label style="font-size:14px;">Zyklisch aktiv:</label>
+      <button id="cyclicEnableBtn" type="button" class="toggle-btn">INAKTIV</button>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+      <div class="field"><label>Pause zwischen Zyklen [min]</label><input type="number" id="cyclicInterval" min="1" max="120" step="1"><div class="field-hint">1-120 Minuten</div></div>
+      <div class="field"><label>Laufzeit pro Zyklus [min]</label><input type="number" id="cyclicDuration" min="1" max="20" step="1"><div class="field-hint">1-20 Minuten</div></div>
+      <div class="field"><label>Heizung bei Zyklus</label><select id="cyclicHeater"><option value="true">Ja</option><option value="false">Nein</option></select><div class="field-hint">Mit Temperaturbedingung</div></div>
+      <div class="field"><label>Heizung Zwang</label><select id="cyclicHeaterForce"><option value="true">Ja</option><option value="false">Nein</option></select><div class="field-hint">Immer an während Zyklus</div></div>
+      <div class="field"><label>Lüfter Drehzahl [%]</label><input type="number" id="cyclicSpeed" min="0" max="100" step="5"><div class="field-hint">0-100%</div></div>
+      <div class="field"><label>Startzeit</label><select id="cyclicStartMin"><option value="0">Volle Stunde (:00)</option><option value="15">Viertelstunde (:15)</option><option value="30">Halbe Stunde (:30)</option><option value="45">Dreiviertelstunde (:45)</option></select><div class="field-hint">Zyklen starten ab dieser Minute</div></div>
+    </div>
+    <div style="margin-top:8px;font-size:13px;color:#94a3b8;" id="cyclicCountdown"></div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button id="cyclicSaveBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#6366f1,#ec4899);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Speichern</button>
+      <div id="cyclicStatus" style="padding:10px;color:#22c55e;font-size:12px;"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Energy Tab -->
+<div id="tab-energy" class="tab-content">
+
+  <div class="card"><div class="title">Stromverbrauchsrechner</div>
+    <div style="margin-bottom:12px;padding:8px 12px;background:rgba(30,41,59,0.5);border-radius:8px;font-size:13px;color:#94a3b8;" id="trackingPeriodValue">Lade...</div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;">
+      <div class="metric">
+        <div class="metric-label">Heizung Laufzeit</div>
+        <div id="heaterRuntimeValue" class="metric-value">--</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Heizung Verbrauch</div>
+        <div id="heaterEnergyValue" class="metric-value">-- kWh</div>
+      </div>
+    </div>
+    <div style="margin-top:16px;">
+      <div class="field"><label>Heizleistung [W]</label>
+        <input type="number" id="energyHeaterWatts" value="2000" min="100" max="5000" step="100">
+        <div class="field-hint">Elektrische Leistung der Heizung laut Typenschild. Typisch 1000-2500W. Wird zur Berechnung des Stromverbrauchs verwendet.</div>
+      </div>
+      <div class="field"><label>Strompreis [€/kWh]</label>
+        <input type="number" id="energyPriceKwh" value="0.35" min="0.01" max="2" step="0.01">
+        <div class="field-hint">Ihr aktueller Strompreis pro Kilowattstunde laut Stromrechnung. Typisch 0.30-0.45 €/kWh in Deutschland.</div>
+      </div>
+    </div>
+    <div style="margin-top:16px;padding:12px;background:rgba(30,41,59,0.7);border-radius:8px;">
+      <div style="font-size:14px;color:#94a3b8;margin-bottom:8px;">Berechnete Kosten:</div>
+      <div style="font-size:24px;font-weight:600;color:#22c55e;" id="energyCostValue">-- €</div>
+    </div>
+    <div style="margin-top:12px;">
+      <button id="energyResetBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444,#dc2626);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Zähler zurücksetzen</button>
+      <div id="energyStatus" style="display:inline;margin-left:12px;font-size:12px;color:#22c55e;"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Sensors Tab -->
+<div id="tab-sensors" class="tab-content">
+
+  <div class="card"><div class="title">Temperatursensoren (DS18B20)</div>
+    <div class="field-hint" style="margin-bottom:12px;">Zuweisung der DS18B20-Sensoren. Tausche die Zuordnung oder weise manuell per ID zu.</div>
+    <div id="sensorList" style="margin-bottom:12px;">Lade...</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button id="sensorSwapBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#f59e0b,#d97706);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">&#8645; Sensoren tauschen</button>
+      <button id="sensorRefreshBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#6366f1,#4f46e5);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Aktualisieren</button>
+      <div id="sensorStatus" style="display:flex;align-items:center;font-size:12px;color:#22c55e;"></div>
+    </div>
+  </div>
+
+  <div class="card"><div class="title">Reboot</div>
+    <div class="field-hint" style="margin-bottom:12px;">Gerät neu starten. Alle laufenden Timer werden zurückgesetzt.</div>
+    <button id="rebootBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444,#dc2626);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Neustart</button>
+  </div>
+
+</div>
+
+<!-- Netzwerk Tab -->
+<div id="tab-wifi" class="tab-content">
+
+  <div class="card"><div class="title">Netzwerk-Status</div>
+    <div id="networkTypeInfo" style="font-size:14px;color:#94a3b8;margin-bottom:8px;">Lade...</div>
+  </div>
+
+  <div class="card"><div class="title">Aktuelle Verbindung</div>
+    <div id="wifiInfo" style="font-size:14px;color:#94a3b8;line-height:1.8;">Lade...</div>
+    <div style="margin-top:12px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div style="font-size:13px;color:#64748b;">Signalstärke:</div>
+        <div id="wifiRssiBar" style="flex:1;height:10px;background:#1e293b;border-radius:5px;overflow:hidden;">
+          <div id="wifiRssiFill" style="height:100%;border-radius:5px;transition:width .3s;"></div>
+        </div>
+        <div id="wifiRssiText" style="font-size:12px;color:#94a3b8;min-width:50px;text-align:right;">--</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card"><div class="title">WLAN-Netzwerke</div>
+    <div class="field-hint" style="margin-bottom:12px;">Verfügbare Netzwerke in Reichweite. Tippe auf ein Netzwerk zum Verbinden.</div>
+    <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button id="wifiScanBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#6366f1,#4f46e5);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Netzwerke suchen</button>
+      <div id="wifiScanStatus" style="display:flex;align-items:center;font-size:12px;color:#94a3b8;"></div>
+    </div>
+    <div id="wifiNetworkList" style="display:flex;flex-direction:column;gap:6px;"></div>
+  </div>
+
+  <div class="card"><div class="title">Manuell verbinden</div>
+    <div class="field-hint" style="margin-bottom:12px;">SSID und Passwort manuell eingeben (z.B. für versteckte Netzwerke).</div>
+    <div class="field"><label>SSID</label><input type="text" id="wifiSsidInput" placeholder="Netzwerkname"></div>
+    <div class="field"><label>Passwort</label>
+      <div style="display:flex;gap:8px;">
+        <input type="password" id="wifiPassInput" placeholder="Passwort" style="flex:1;">
+        <button id="wifiShowPassBtn" type="button" style="padding:8px 12px;background:rgba(51,65,85,0.7);color:#94a3b8;border:none;border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap;">Zeigen</button>
+      </div>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <button id="wifiConnectBtn" type="button" style="padding:10px 20px;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;">Verbinden</button>
+      <div id="wifiConnectStatus" style="font-size:12px;color:#22c55e;"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Firmware Tab -->
+<div id="tab-firmware" class="tab-content">
+
+  <div class="card"><div class="title">Firmware Info</div>
+    <div class="grid">
+      <div class="metric"><div class="metric-label">Version</div><div id="fwVersion" class="metric-value">-</div></div>
+      <div class="metric"><div class="metric-label">Build</div><div id="fwBuild" class="metric-value">-</div></div>
+      <div class="metric"><div class="metric-label">RAM frei</div><div id="fwHeap" class="metric-value">-</div></div>
+      <div class="metric"><div class="metric-label">Uptime</div><div id="fwUptime" class="metric-value">-</div></div>
+    </div>
+  </div>
+
+  <div class="card"><div class="title">Firmware Update</div>
+    <div class="field-hint" style="margin-bottom:12px;">Firmware (.bin) oder Filesystem (littlefs.bin) hochladen. Nach erfolgreichem Upload startet das Ger&auml;t automatisch neu.</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+      <input type="file" id="fwFile" accept=".bin" style="flex:1;min-width:200px;padding:8px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:8px;font-size:13px;">
+      <button id="fwUploadBtn" type="button" onclick="uploadFirmware()" style="padding:10px 24px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;white-space:nowrap;">Upload starten</button>
+    </div>
+    <div id="fwProgress" style="margin-top:12px;display:none;">
+      <div style="background:#1e293b;border-radius:8px;overflow:hidden;height:24px;">
+        <div id="fwProgressBar" style="height:100%;background:linear-gradient(90deg,#22c55e,#16a34a);width:0%;transition:width 0.3s;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#fff;">0%</div>
+      </div>
+    </div>
+    <div id="fwStatus" style="margin-top:8px;font-size:13px;color:#94a3b8;"></div>
+  </div>
+
+  <div class="card"><div class="title">System</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;">
+      <button type="button" onclick="doReboot()" style="padding:10px 20px;background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;">Neustart</button>
+    </div>
+  </div>
+
+</div>
+
+</div>
+<script src="/app.js?v=6"></script>
+</body>
+</html>

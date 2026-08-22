@@ -5,7 +5,3 @@
 .vscode/ipch
 src/secrets.h
 .DS_Store
-compile_commands.json
-.cache
-.upgrade_backup
-Heizstabsteuerung04/

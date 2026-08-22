@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pool Controller</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="shell">
+  <div class="app-header">
+    <div class="app-brand">
+      <div class="app-brand-text">
+        <div class="app-title">Pool Controller</div>
+        <div class="app-subtitle">ESP32 · ST7920 · DS18B20</div>
+      </div>
+    </div>
+    <div class="app-header-right">
+      <div class="app-clock" id="metaClock">--:--:--</div>
+      <div class="meta-pill" id="metaMqtt">
+        <div class="meta-pill-dot"></div>
+        <span id="metaMqttState">offline</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ TABS ============================ -->
+  <div class="tabs">
+    <button class="tab active" data-tab="status">Status</button>
+    <button class="tab" data-tab="schedule">Zeitplan</button>
+    <button class="tab" data-tab="display">Display</button>
+    <button class="tab" data-tab="settings">Einstellungen</button>
+    <button class="tab" data-tab="verlauf">Verlauf</button>
+    <button class="tab" data-tab="pinout">Pinout</button>
+  </div>
+
+  <!-- ============================ STATUS ============================ -->
+  <div id="tab-status" class="tab-content active">
+    <div class="card">
+      <div class="title">Aktuelle Werte</div>
+      <div class="grid">
+        <div class="metric"><div class="metric-label">Pool-Temperatur</div><div id="vTemp" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">Luft-Temperatur</div><div id="vTempAir" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">ORP</div><div id="vOrp" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">Spannung</div><div id="vVolt" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">Uptime</div><div id="vUptime" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">WiFi RSSI</div><div id="vRssi" class="metric-value">—</div></div>
+      </div>
+    </div>
+
+    <div class="card"><div class="title">Status-LEDs</div>
+      <div class="led-bar">
+        <div class="led" title="Grün = Pumpe läuft"><div class="led-dot" id="ledPump"></div>Pumpe</div>
+        <div class="led" title="Grün = Flow vorhanden"><div class="led-dot" id="ledFlow"></div>Flow</div>
+        <div class="led" title="Rot = Flow-Fehler aktiv"><div class="led-dot" id="ledFlowErr"></div>Flow-Err</div>
+        <div class="led" title="Grün = Elektrolyse A aktiv"><div class="led-dot" id="ledElyA"></div>Ely A</div>
+        <div class="led" title="Grün = Elektrolyse B aktiv"><div class="led-dot" id="ledElyB"></div>Ely B</div>
+        <div class="led" title="Grün = Elektrolyse K aktiv"><div class="led-dot" id="ledElyK"></div>Ely K</div>
+        <div class="led" title="Grün = Trafo aktiv"><div class="led-dot" id="ledTrafo"></div>Trafo</div>
+        <div class="led" title="Grün = DS18B20 gefunden"><div class="led-dot" id="ledDs"></div>DS18B20</div>
+        <div class="led" title="Grün = ADS1115 gefunden"><div class="led-dot" id="ledAds"></div>ADS1115</div>
+        <div class="led" title="Grün = MQTT verbunden"><div class="led-dot" id="ledMqtt"></div>MQTT</div>
+        <div class="led" title="Grün = Wochenplan erlaubt Ely A/B aktuell (oder Plan ist deaktiviert / NTP noch nicht synchron)"><div class="led-dot" id="ledSchedule"></div>Zeitplan</div>
+        <div class="led" title="Grün = Ely A/B Automatikmodus aktiv"><div class="led-dot" id="ledAuto"></div>Auto</div>
+        <div class="led" title="Grün = Uhrzeit per NTP synchronisiert"><div class="led-dot" id="ledNtp"></div>NTP</div>
+      </div>
+    </div>
+
+    <div class="card"><div class="title">Manuelle Steuerung</div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+        <button id="btnPump"  class="btn-large toggle-btn" type="button" data-cmd="pump">Pumpe AUS</button>
+        <button id="btnElyA"  class="btn-large toggle-btn" type="button" data-cmd="ely_a">Ely A AUS</button>
+        <button id="btnElyB"  class="btn-large toggle-btn" type="button" data-cmd="ely_b">Ely B AUS</button>
+        <button id="btnElyK"  class="btn-large toggle-btn" type="button" data-cmd="ely_k">Ely K AUS</button>
+      </div>
+      <div class="hint">Der Trafo schaltet automatisch, sobald eine Elektrolyse aktiv ist und
+         Flow vorhanden ist. Fehlt Flow länger als 10 s wird er abgeschaltet.</div>
+      <div style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;">
+        <div><b>Trafo:</b> <span id="vTrafo" style="color:#38bdf8;">—</span></div>
+        <div><b>Flow:</b> <span id="vFlow" style="color:#38bdf8;">—</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ ZEITPLAN ============================ -->
+  <div id="tab-schedule" class="tab-content">
+    <div class="card"><div class="title">Wochenplan für Elektrolyse A/B</div>
+      <div class="field-hint" style="margin-bottom:12px;">
+        Nur Ely&nbsp;A/B werden vom Plan geschaltet. Pumpe und Ely&nbsp;K laufen
+        unabhängig. Zellen in grün = in dieser Stunde ist Ely&nbsp;A/B erlaubt.
+        Klick auf eine Zelle schaltet um; <b>Speichern</b> schreibt ins NVS.
+        Solange NTP nicht synchron ist, wird der Plan ignoriert (failsafe).
+      </div>
+      <div style="margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <label style="margin:0;">Zeitplan aktiv:</label>
+        <button id="schedEnableBtn" type="button" class="toggle-btn">INAKTIV</button>
+        <span class="field-hint" style="margin:0;">Aktueller Zustand:
+          <b id="schedLive" style="color:#94a3b8;">—</b></span>
+      </div>
+      <div style="overflow-x:auto;">
+        <table id="schedTable" style="border-collapse:collapse;width:100%;min-width:600px;">
+          <thead><tr id="schedHead"></tr></thead>
+          <tbody id="schedBody"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="schedSaveBtn"   type="button">Speichern</button>
+        <button id="schedAllOnBtn"  type="button" style="background:linear-gradient(135deg,#22c55e,#16a34a);">Alle AN</button>
+        <button id="schedAllOffBtn" type="button" class="btn-danger">Alle AUS</button>
+        <div id="schedStatus" class="field-hint" style="align-self:center;color:#22c55e;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ DISPLAY ============================ -->
+  <div id="tab-display" class="tab-content">
+    <div style="display:flex;justify-content:center;align-items:center;padding:20px;">
+      <canvas id="lcdCanvas" width="128" height="64" style="display:block;background:#000;border:1px solid #334155;border-radius:6px;image-rendering:pixelated;max-width:100%;height:auto;"></canvas>
+    </div>
+    <!-- Hidden checkbox for auto-refresh (required by display mirror script) -->
+    <input type="checkbox" id="lcdToggleAuto" checked hidden>
+  </div>
+
+  <!-- ============================ EINSTELLUNGEN ============================ -->
+  <div id="tab-settings" class="tab-content">
+
+    <!-- ---- WLAN (moved from old System tab) ------------------------------- -->
+    <div class="card wifi-banner" id="wifiBanner">
+      <div class="wifi-banner-icon" id="wifiBannerIcon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="40" height="40" class="wifi-bars">
+          <path d="M12 19a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/>
+          <path class="b1" d="M8.5 15.5a5 5 0 0 1 7 0l1.4-1.4a7 7 0 0 0-9.8 0l1.4 1.4z"/>
+          <path class="b2" d="M5.6 12.6a9 9 0 0 1 12.8 0l1.4-1.4a11 11 0 0 0-15.6 0l1.4 1.4z"/>
+          <path class="b3" d="M2.8 9.8a13 13 0 0 1 18.4 0l1.4-1.4a15 15 0 0 0-21.2 0l1.4 1.4z"/>
+        </svg>
+      </div>
+      <div class="wifi-banner-info">
+        <div class="wifi-banner-ssid" id="wifiCurSsid">—</div>
+        <div class="wifi-banner-meta">
+          <span class="wifi-chip" id="wifiCurIp">IP —</span>
+          <span class="wifi-chip" id="wifiCurRssi">— dBm</span>
+          <span class="wifi-chip" id="wifiCurHost">host —</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card"><div class="title">WLAN-Zugangsdaten</div>
+      <form id="formWifi">
+        <div class="field">
+          <label>SSID</label>
+          <input type="text" name="wifi_ssid" id="cfgWifiSsid" required autocomplete="off" spellcheck="false">
+          <div class="field-hint">In die Liste unten klicken, um ein Netzwerk auszuwählen.</div>
+        </div>
+        <div class="field">
+          <label>Passwort</label>
+          <div class="pw-wrap">
+            <input type="password" name="wifi_password" id="cfgWifiPassword" placeholder="(unverändert)" autocomplete="new-password">
+            <button type="button" class="pw-toggle" id="btnPwToggle" title="Passwort anzeigen">👁</button>
+          </div>
+          <div class="field-hint">Leer lassen, um das gespeicherte Passwort zu behalten.</div>
+        </div>
+        <div style="grid-column:1/-1;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <button type="button" id="btnScan" class="btn-secondary">
+            <span class="scan-spinner" id="scanSpinner" hidden></span>
+            <span id="scanBtnLabel">Netzwerke scannen</span>
+          </button>
+          <button type="submit">Speichern &amp; Neustart</button>
+          <span id="wifiStatus" class="field-hint" style="color:#22c55e;margin-left:auto;"></span>
+        </div>
+      </form>
+    </div>
+
+    <div class="card"><div class="title">Verfügbare Netzwerke</div>
+      <div id="scanResult" class="wifi-grid">
+        <div class="wifi-placeholder">Auf <b>„Netzwerke scannen"</b> klicken, um eine Liste zu laden.</div>
+      </div>
+    </div>
+
+    <div class="card"><div class="title">Startverhalten</div>
+      <form id="formStart">
+        <div class="field">
+          <label>Pumpe beim Einschalten</label>
+          <select name="pump_start_on" id="cfgPumpStartOn">
+            <option value="true">AN (Standard)</option>
+            <option value="false">AUS</option>
+          </select>
+          <div class="field-hint">Gespeichert im NVS. Gilt für den nächsten Neustart des Controllers.</div>
+        </div>
+        <div style="grid-column:1/-1;"><button type="submit">Speichern</button></div>
+        <div id="startStatus" class="field-hint" style="grid-column:1/-1;color:#22c55e;"></div>
+      </form>
+    </div>
+
+    <div class="card"><div class="title">MQTT</div>
+      <form id="formMqtt">
+        <div class="field"><label>Host</label><input type="text" name="mqtt_host" id="cfgMqttHost" required><div class="field-hint">IP oder Hostname des MQTT-Brokers.</div></div>
+        <div class="field"><label>Port</label><input type="number" name="mqtt_port" id="cfgMqttPort" min="1" max="65535" required><div class="field-hint">Standard: 1883 (unverschlüsselt).</div></div>
+        <div class="field"><label>Benutzer</label><input type="text" name="mqtt_user" id="cfgMqttUser"><div class="field-hint">Leer lassen für anonyme Broker.</div></div>
+        <div class="field"><label>Passwort</label><input type="password" name="mqtt_password" id="cfgMqttPassword" placeholder="(unverändert)"><div class="field-hint">Leer lassen, um das gespeicherte Passwort zu behalten.</div></div>
+        <div class="field"><label>Base-Topic</label><input type="text" name="mqtt_base_topic" id="cfgMqttBase" required><div class="field-hint">z.B. <code>poolcontroller</code>. Status unter <code>.../status</code>, Befehle unter <code>.../cmd/...</code>.</div></div>
+        <div class="field"><label>Publish-Intervall [s]</label><input type="number" name="mqtt_interval_secs" id="cfgMqttInterval" min="1" max="300"><div class="field-hint">Status-Veröffentlichung per MQTT.</div></div>
+        <div style="grid-column:1/-1;"><button type="submit">Speichern</button></div>
+        <div id="mqttStatus" class="field-hint" style="grid-column:1/-1;color:#22c55e;"></div>
+      </form>
+    </div>
+
+    <div class="card"><div class="title">Elektrolyse A ↔ B Wechsel</div>
+      <div class="field-hint" style="margin-bottom:10px;">
+        Ely&nbsp;A und Ely&nbsp;B dürfen <b>nie gleichzeitig</b> an sein. Wenn eine der beiden aktiv ist,
+        wechselt der Regler nach Ablauf der eingestellten Zeit automatisch auf die andere Zelle.
+        Ely&nbsp;K arbeitet unabhängig.
+      </div>
+      <form id="formElyAB">
+        <div class="field" style="grid-column:1/-1;">
+          <label class="chk" style="cursor:pointer;">
+            <input type="checkbox" name="ely_ab_auto" id="cfgElyABAuto" value="true">
+            <b>Automatikmodus</b>
+          </label>
+          <div class="field-hint">
+            Wenn aktiv, wird die Elektrolyse <b>nach dem Wochen-Zeitplan</b> automatisch
+            ein- und ausgeschaltet (mit A/B-Wechsel). Wenn aus, läuft die Zelle nur auf
+            manuellen Befehl (Web/MQTT/Taster) – der Zeitplan schaltet sie aber weiter
+            außerhalb der Freigabe-Stunden zur Sicherheit ab.
+          </div>
+        </div>
+        <div class="field">
+          <label>Wechselzeit [s]</label>
+          <input type="number" name="ely_ab_switch_secs" id="cfgElyABSwitch" min="10" max="86400" step="10">
+          <div class="field-hint">Standard 600 s (10 min). Minimum 10 s, Maximum 24 h.</div>
+        </div>
+        <div class="field">
+          <label>Aktueller Zustand</label>
+          <div class="metric-value" id="vElyABPhase" style="font-size:18px;">—</div>
+          <div class="field-hint">Nächster Wechsel in <span id="vElyABCountdown">—</span></div>
+        </div>
+        <div style="grid-column:1/-1;"><button type="submit">Speichern</button></div>
+        <div id="elyABStatus" class="field-hint" style="grid-column:1/-1;color:#22c55e;"></div>
+      </form>
+    </div>
+
+    <div class="card"><div class="title">ORP Kalibrierung</div>
+      <div class="field-hint" style="margin-bottom:10px;">
+        ORP-Sonde kurzschließen, bis die Anzeige stabil ist, dann auf
+        <b>Jetzt kalibrieren</b> klicken. Der Offset (mV) wird ins NVS gespeichert.
+      </div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+        <div class="field">
+          <label>Offset (mV)</label>
+          <input type="number" id="cfgOrpCal" step="1">
+        </div>
+        <div style="align-self:end;">
+          <button type="button" id="btnCal">Jetzt kalibrieren</button>
+        </div>
+        <div style="align-self:end;">
+          <button type="button" id="btnSaveCal" class="btn-secondary">Offset speichern</button>
+        </div>
+      </div>
+      <div id="calStatus" class="field-hint" style="margin-top:8px;color:#22c55e;"></div>
+    </div>
+
+    <div class="card"><div class="title">Temperatur-Sensor-Zuordnung</div>
+      <div class="field-hint" style="margin-bottom:10px;">
+        Manuelle Zuordnung der DS18B20-Sensoren zu Pool/Luft. Die Sensor-ID ist die
+        ROM-Adresse im Hex-Format (z.B. <code>28FF1234567890A1</code>). Leer lassen für
+        automatische Erkennung (niedrigste ROM = Pool, zweitniedrigste = Luft).
+      </div>
+
+      <div style="margin-bottom:14px;">
+        <div style="font-size:13px;font-weight:600;margin-bottom:6px;color:#cbd5f5;">Erkannte Sensoren am Bus:</div>
+        <div id="sensorDiscoveredList" style="display:flex;flex-direction:column;gap:6px;">
+          <div class="field-hint">— Lade Status —</div>
+        </div>
+      </div>
+
+      <form id="formSensors">
+        <div class="field">
+          <label>Pool-Sensor ID (leer = Auto)</label>
+          <input type="text" name="temp_sensor_pool_id" id="cfgTempPoolId" maxlength="16" placeholder="28FF1234567890A1" style="font-family:ui-monospace,monospace;letter-spacing:1px;text-transform:uppercase;">
+          <div class="field-hint">16-stellige Hex-Adresse des Pool-Temperatursensors.</div>
+        </div>
+        <div class="field">
+          <label>Luft-Sensor ID (leer = Auto)</label>
+          <input type="text" name="temp_sensor_air_id" id="cfgTempAirId" maxlength="16" placeholder="28FF1234567890A1" style="font-family:ui-monospace,monospace;letter-spacing:1px;text-transform:uppercase;">
+          <div class="field-hint">16-stellige Hex-Adresse des Luft-Temperatursensors.</div>
+        </div>
+        <div style="grid-column:1/-1;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <button type="submit">Speichern</button>
+          <button type="button" id="btnScanSensors" class="btn-secondary">Bus-Scan</button>
+        </div>
+        <div id="sensorStatus" class="field-hint" style="grid-column:1/-1;color:#22c55e;"></div>
+        <div id="sensorScanResult" class="field-hint" style="grid-column:1/-1;color:#94a3b8;"></div>
+      </form>
+    </div>
+
+    <div class="card"><div class="title">Apple HomeKit</div>
+      <div class="field-hint" style="margin-bottom:12px;">
+        Der Controller meldet sich als <b>HomeKit-Bridge</b> mit fünf Accessories
+        an: Pumpe, Elektrolyse A/B, Elektrolyse K, Pool-Temperatur und Flow-Sensor.
+        Zum Koppeln in der Apple Home-App: <i>+ → Gerät hinzufügen → Weitere
+        Optionen…</i> → <b>Pool Controller</b> auswählen und den Setup-Code unten
+        eingeben.
+      </div>
+      <div class="grid">
+        <div class="metric">
+          <div class="metric-label">Setup-Code</div>
+          <div id="hkSetup" class="metric-value" style="font-family:ui-monospace,monospace;font-size:22px;letter-spacing:3px;">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Pairing-Status</div>
+          <div id="hkPaired" class="metric-value" style="font-size:14px;">—</div>
+        </div>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <button type="button" id="btnHkReset" class="btn-danger">Pairing zurücksetzen</button>
+        <span id="hkStatus" class="field-hint" style="color:#94a3b8;"></span>
+      </div>
+      <div class="field-hint" style="margin-top:10px;">
+        Pairing zurücksetzen entfernt alle gekoppelten iPhones/HomePods/Apple-TVs
+        und startet den Controller neu. Das Zubehör muss anschließend in der
+        Home-App einmal entfernt und neu hinzugefügt werden.
+      </div>
+    </div>
+
+    <!-- ---- System info + reboot (moved from old System tab) --------------- -->
+    <div class="card"><div class="title">System</div>
+      <div class="grid">
+        <div class="metric"><div class="metric-label">Firmware</div><div id="sysFw" class="metric-value" style="font-size:14px;">—</div></div>
+        <div class="metric"><div class="metric-label">Build</div><div id="sysBuild" class="metric-value" style="font-size:14px;">—</div></div>
+        <div class="metric"><div class="metric-label">Hostname</div><div id="sysHost" class="metric-value" style="font-size:14px;">—</div></div>
+        <div class="metric"><div class="metric-label">DS18B20</div><div id="sysDs" class="metric-value" style="font-size:14px;">—</div></div>
+        <div class="metric"><div class="metric-label">ADS1115</div><div id="sysAds" class="metric-value" style="font-size:14px;">—</div></div>
+      </div>
+      <div style="margin-top:16px;">
+        <button type="button" id="btnReboot" class="btn-danger">Neustart</button>
+      </div>
+    </div>
+
+    <div class="card"><div class="title">Firmware-Update (OTA)</div>
+      <form id="formOta" method="POST" action="/update" enctype="multipart/form-data">
+        <div class="field" style="grid-column:1/-1;">
+          <label>Firmware .bin</label>
+          <input type="file" name="update" accept=".bin" required
+                 style="padding:10px;background:#020617;color:#e5e7eb;border:1px solid #334155;border-radius:8px;">
+        </div>
+        <div style="grid-column:1/-1;"><button type="submit">Hochladen &amp; Neustart</button></div>
+      </form>
+      <p class="hint">Alternativ CLI: <code>pio run -e esp32dev_ota -t upload</code></p>
+    </div>
+
+  </div>
+
+  <!-- ============================ VERLAUF ============================ -->
+  <div id="tab-verlauf" class="tab-content">
+    <div class="card">
+      <div class="title">Pool-Temperaturverlauf</div>
+      <div class="field-hint" style="margin-bottom:10px;">
+        Speichert Pool-Temperatur und ORP alle 15&nbsp;Minuten
+        (Ringpuffer <b>14&nbsp;Tage</b>, 1344&nbsp;Slots à 8&nbsp;Byte) und
+        sichert sie alle 5&nbsp;Minuten in einer dedizierten
+        NVS-Partition (<code>histdata</code>). Der Verlauf überlebt sowohl
+        Firmware-OTA als auch <code>uploadfs</code> — nur ein kompletter
+        <code>erase_flash</code> löscht ihn.
+      </div>
+
+      <div style="position:relative;">
+        <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+          <label style="font-size:12px;color:#94a3b8;">Zeitfenster:</label>
+          <select id="histWindowMins" style="padding:6px 10px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:12px;">
+            <option value="360">6 Stunden</option>
+            <option value="720">12 Stunden</option>
+            <option value="1440">24 Stunden</option>
+            <option value="2880" selected>2 Tage</option>
+            <option value="10080">7 Tage</option>
+            <option value="20160">14 Tage</option>
+          </select>
+          <label style="font-size:12px;color:#94a3b8;margin-left:8px;">Höhe:</label>
+          <input type="range" id="histHeight" min="220" max="600" value="360" step="20" style="flex:1;height:6px;min-width:80px;">
+          <span id="histHeightVal" style="font-size:12px;color:#94a3b8;min-width:48px;">360 px</span>
+          <button type="button" id="btnHistRefresh" class="btn-secondary" style="padding:6px 14px;font-size:12px;">Aktualisieren</button>
+        </div>
+        <canvas id="histChart" style="width:100%;height:360px;display:block;background:#020617;border:1px solid rgba(51,65,85,0.6);border-radius:8px;"></canvas>
+        <div id="histTooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(15,23,42,0.96);border:1px solid #334155;border-radius:6px;padding:8px 12px;font-size:12px;color:#e5e7eb;z-index:10;white-space:nowrap;box-shadow:0 6px 18px rgba(0,0,0,0.5);"></div>
+        <div id="histStatus" class="field-hint" style="margin-top:8px;color:#94a3b8;"></div>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center;">
+        <a href="/api/history-csv" download="pool-history.csv" id="btnHistCsv"
+           style="display:inline-block;padding:10px 22px;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600;">
+           &#x2B07; CSV herunterladen
+        </a>
+        <span class="field-hint" style="color:#64748b;">
+          Trennzeichen <code>;</code>, dezimal <code>.</code>, Zeichensatz UTF-8.
+        </span>
+      </div>
+    </div>
+
+    <!-- Manuelle Messwerte ------------------------------------------------ -->
+    <div class="card" style="margin-top:18px;">
+      <h2 style="margin-top:0;">Manuelle Messwerte</h2>
+      <p class="field-hint" style="margin-top:-4px;">
+        Trag hier deine Strip-/Photometer-Messungen ein.
+        Die Werte werden in den Chart eingeblendet (linear interpoliert)
+        und in den CSV-Export aufgenommen.
+      </p>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-bottom:10px;">
+        <div>
+          <label style="font-size:12px;color:#94a3b8;display:block;">Chlor (mg/L)</label>
+          <input id="manualCl" type="number" step="0.01" min="0" max="10" placeholder="0.80"
+                 style="width:120px;padding:8px 10px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:14px;">
+        </div>
+        <div>
+          <label style="font-size:12px;color:#94a3b8;display:block;">Zeitstempel</label>
+          <input id="manualClWhen" type="datetime-local"
+                 style="padding:8px 10px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:14px;">
+        </div>
+        <button id="btnManualSendCl" type="button"
+                style="padding:9px 18px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">
+          Senden
+        </button>
+        <span id="manualClStatus" class="field-hint" style="color:#94a3b8;"></span>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+        <div>
+          <label style="font-size:12px;color:#94a3b8;display:block;">pH-Wert</label>
+          <input id="manualPh" type="number" step="0.01" min="0" max="14" placeholder="7.20"
+                 style="width:120px;padding:8px 10px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:14px;">
+        </div>
+        <div>
+          <label style="font-size:12px;color:#94a3b8;display:block;">Zeitstempel</label>
+          <input id="manualPhWhen" type="datetime-local"
+                 style="padding:8px 10px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:6px;font-size:14px;">
+        </div>
+        <button id="btnManualSendPh" type="button"
+                style="padding:9px 18px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">
+          Senden
+        </button>
+        <span id="manualPhStatus" class="field-hint" style="color:#94a3b8;"></span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px;">
+        <div>
+          <h3 style="margin:0 0 6px 0;font-size:13px;color:#93c5fd;letter-spacing:.05em;">Chlor-Verlauf</h3>
+          <div id="manualClList" style="font-size:12px;color:#cbd5e1;max-height:180px;overflow:auto;"></div>
+        </div>
+        <div>
+          <h3 style="margin:0 0 6px 0;font-size:13px;color:#fcd34d;letter-spacing:.05em;">pH-Verlauf</h3>
+          <div id="manualPhList" style="font-size:12px;color:#cbd5e1;max-height:180px;overflow:auto;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ PINOUT ============================ -->
+  <div id="tab-pinout" class="tab-content">
+    <div class="card">
+      <div class="title">ESP32 Pinout</div>
+      <div class="pin-toolbar">
+        <div class="pin-controls">
+          <label class="chk"><input type="checkbox" id="pinToggleLive" checked> Live-Status</label>
+          <label class="chk"><input type="checkbox" id="pinToggleUsed"> Nur genutzte Pins</label>
+        </div>
+        <button type="button" class="btn-link" id="btnDownloadSvg">SVG herunterladen</button>
+      </div>
+      <div id="pin-board-wrap">
+        <svg id="pin-svg" viewBox="0 0 1400 720">
+          <defs>
+            <linearGradient id="pcb-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" style="stop-color:#1e3a5f"/>
+              <stop offset="100%" style="stop-color:#0a1f3d"/>
+            </linearGradient>
+            <linearGradient id="usb-shell-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" style="stop-color:#9ca3af"/>
+              <stop offset="100%" style="stop-color:#64748b"/>
+            </linearGradient>
+            <linearGradient id="hdr-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" style="stop-color:#2d2d2d"/>
+              <stop offset="100%" style="stop-color:#1a1a1a"/>
+            </linearGradient>
+            <linearGradient id="shield-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" style="stop-color:#4a5568"/>
+              <stop offset="100%" style="stop-color:#2d3748"/>
+            </linearGradient>
+            <linearGradient id="pad-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" style="stop-color:#fbbf24"/>
+              <stop offset="100%" style="stop-color:#d4a84b"/>
+            </linearGradient>
+          </defs>
+          <rect class="pcb-base" x="140" y="141" width="1120" height="488" rx="12"/>
+          <path class="pcb-silk-fr" d="M 160 160 L 1240 160 L 1240 610 L 160 610 Z"/>
+          <circle class="pcb-hole" cx="180" cy="180" r="4"/>
+          <circle class="pcb-hole" cx="1220" cy="180" r="4"/>
+          <circle class="pcb-hole" cx="180" cy="590" r="4"/>
+          <circle class="pcb-hole" cx="1220" cy="590" r="4"/>
+          <rect class="usb-body" x="660" y="580" width="80" height="30" rx="4"/>
+          <rect class="usb-shell" x="665" y="583" width="70" height="24" rx="2"/>
+          <rect class="usb-inner" x="670" y="586" width="60" height="18" rx="1"/>
+          <rect class="usb-tongue" x="690" y="590" width="20" height="10" rx="1"/>
+          <text class="usb-label" x="700" y="603" text-anchor="middle">USB</text>
+          <rect class="hdr-strip" x="140" y="130" width="1120" height="20"/>
+          <rect class="shield" x="400" y="300" width="600" height="180" rx="8"/>
+          <line class="shield-seam" x1="400" y1="390" x2="1000" y2="390"/>
+          <circle class="shield-rivets" cx="420" cy="320" r="3"/>
+          <circle class="shield-rivets" cx="980" cy="320" r="3"/>
+          <circle class="shield-rivets" cx="420" cy="460" r="3"/>
+          <circle class="shield-rivets" cx="980" cy="460" r="3"/>
+          <text class="shield-label" x="700" y="375" text-anchor="middle">ESP32-WROVER</text>
+          <text class="shield-label sub" x="700" y="445" text-anchor="middle">D0WDQ6</text>
+          <text class="shield-label fcc" x="700" y="465" text-anchor="middle">FCC ID: 2AAR8-ESP32WROOM</text>
+          <path class="antenna" d="M 1050 280 L 1150 280 L 1150 350 L 1050 350 Z"/>
+          <path class="antenna-feed" d="M 1050 315 L 1040 315"/>
+          <rect class="btn-body" x="350" y="520" width="30" height="30" rx="4"/>
+          <rect class="btn-cap" x="355" y="525" width="20" height="20" rx="2"/>
+          <text class="btn-txt" x="365" y="540" text-anchor="middle">EN</text>
+          <rect class="led-pwr" x="300" y="530" width="10" height="10" rx="2"/>
+          <rect class="led-io" x="320" y="530" width="10" height="10" rx="2"/>
+          <rect class="chip-qfn" x="500" y="400" width="80" height="80" rx="2"/>
+          <rect class="chip-pads" x="510" y="410" width="5" height="5"/>
+          <rect class="chip-pads" x="565" y="410" width="5" height="5"/>
+          <rect class="chip-pads" x="510" y="465" width="5" height="5"/>
+          <rect class="chip-pads" x="565" y="465" width="5" height="5"/>
+          <circle class="chip-dot" cx="510" y="410" r="2"/>
+          <rect class="chip-sot" x="600" y="420" width="40" height="40" rx="2"/>
+          <rect class="chip-tab" x="615" y="435" width="10" height="10"/>
+          <rect class="xtal" x="700" y="520" width="40" height="20" rx="4"/>
+          <rect class="caps" x="750" y="525" width="20" height="10" rx="2"/>
+          <rect class="caps" x="780" y="525" width="20" height="10" rx="2"/>
+          <text class="silk" x="200" y="200">ESP32</text>
+          <text class="silk" x="200" y="220">DevKit V1</text>
+          <text class="silk" x="1150" y="580">USB-C</text>
+          <div id="pin-tip" class="pin-tip" hidden></div>
+        </svg>
+      </div>
+      <div class="legend-row">
+        <span class="lg"><i class="lg-power"></i> Power</span>
+        <span class="lg"><i class="lg-gnd"></i> GND</span>
+        <span class="lg"><i class="lg-gpio"></i> GPIO</span>
+        <span class="lg"><i class="lg-relay"></i> Relais</span>
+        <span class="lg"><i class="lg-sensor"></i> Sensor</span>
+        <span class="lg"><i class="lg-spi"></i> SPI</span>
+        <span class="lg"><i class="lg-i2c"></i> I²C</span>
+        <span class="lg i-lg-on"><i></i> Aktiv</span>
+      </div>
+      <div id="pin-detail-card" class="card" hidden style="margin-top:12px;"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
