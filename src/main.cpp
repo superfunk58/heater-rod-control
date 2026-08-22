@@ -365,6 +365,20 @@ void sendupdate(bool force)
     doc["nextCycleSec"] = ncs;
   }
 
+  // Pump coast-down (Nachlauf) status
+  {
+    bool coastdown = (heatingStoppedAt != 0 &&
+                      (millis() - heatingStoppedAt) < PUMP_MIN_RUNTIME_MS);
+    doc["pumpCoastdown"] = coastdown;
+    if (coastdown) {
+      long remaining = (long)((PUMP_MIN_RUNTIME_MS - (millis() - heatingStoppedAt)) / 1000);
+      if (remaining < 0) remaining = 0;
+      doc["pumpCoastdownSec"] = remaining;
+    } else {
+      doc["pumpCoastdownSec"] = 0;
+    }
+  }
+
   // Volatility filter status (nur Zustand, keine internen Fensterdaten)
   doc["pumpTempCondEnabled"] = PUMP_TEMP_COND_ENABLED;
   doc["pumpTempHystC"]       = PUMP_TEMP_HYST_C;
@@ -1166,10 +1180,9 @@ void loop() {
           // Calculate required power, ensuring it's at least MIN_POWER_THRESHOLD
           wattneeded = max(MIN_POWER_THRESHOLD, min(powerToConsume, MAX_HEATING_POWER));
         
-        // Calculate DAC value using interpolation, scaled by the learned
-        // correction factor (compensates for mains voltage / plant variation).
+        // Calculate DAC value using interpolation
         daccommandValueinterpolated = int(Interpolation::CatmullSpline(
-          wattValues, daccommandValues, numValues, wattneeded * dacCorrectionFactor));
+          wattValues, daccommandValues, numValues, wattneeded));
 
         // Ensure value is within valid range
         int maxDAC = (int)daccommandValues[numValues-1];
@@ -1219,7 +1232,7 @@ void loop() {
           wattneeded = newWattNeeded;
           
           daccommandValueinterpolated = int(Interpolation::CatmullSpline(
-            wattValues, daccommandValues, numValues, wattneeded * dacCorrectionFactor));
+            wattValues, daccommandValues, numValues, wattneeded));
 
           int maxDAC = (int)daccommandValues[numValues-1];
           DACoutput = min(daccommandValueinterpolated, maxDAC);
@@ -1246,7 +1259,7 @@ void loop() {
           // Clamped to ±20% — covers 230V mains variation (P ~ V², ±10% V → ±20% P).
           if (abs(delta) < 20 && wattneeded > 50 &&
               (currentTime - lastCorrectionUpdate) > CORRECTION_UPDATE_INTERVAL) {
-            float adjustment = 1.0f + (float)delta / (float)wattneeded;
+            float adjustment = 1.0f + (float)delta / (float)wattneeded * 0.01f;
             dacCorrectionFactor = dacCorrectionFactor * 0.95f + adjustment * 0.05f;
             dacCorrectionFactor = max(0.8f, min(1.2f, dacCorrectionFactor));
             lastCorrectionUpdate = currentTime;

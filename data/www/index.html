@@ -120,6 +120,7 @@ input:focus,select:focus{outline:none;border-color:#38bdf8}
 <div class="led"><div class="ld" id="lReg"></div>Regelung aktiv</div>
 <div class="led"><div class="ld" id="lHeat"></div>Heizstab EIN</div>
 <div class="led"><div class="ld" id="lPump"></div>Pumpe EIN</div>
+<div class="led"><div class="ld" id="lCoast"></div>Nachlauf <span id="sCoast" style="font-variant-numeric:tabular-nums;color:#94a3b8"></span></div>
 <div class="led"><div class="ld" id="lAuto"></div>Pumpe Auto</div>
 <div class="led"><div class="ld" id="lCycle"></div>Zyklus aktiv</div>
 </div>
@@ -380,22 +381,26 @@ function render(s) {
   setLed('lReg', s.Regulating);
   setLed('lHeat', s.heating, s.noLoadResponse);
   setLed('lPump', s.pumpmanualpower || s.pumpautocontrolled);
+  setLed('lCoast', s.pumpCoastdown);
+  $('sCoast').textContent = (s.pumpCoastdown && s.pumpCoastdownSec > 0) ? s.pumpCoastdownSec + 's' : '';
   setLed('lAuto', s.pumpautocontrolled);
   setLed('lCycle', s.pumpCycleActive);
 
-  // Update config input fields with current live values (only if not focused by user)
+  // Update config input fields with current live values.
+  // Skip fields that the user has modified (dirty) to preserve unsaved edits.
   const activeElement = document.activeElement;
-  if (s.zeroFeedTarget !== undefined && activeElement !== $('cZft')) $('cZft').value = s.zeroFeedTarget;
-  if (s.maxHeatingPower !== undefined && activeElement !== $('cMax')) $('cMax').value = s.maxHeatingPower;
-  if (s.minPowerThreshold !== undefined && activeElement !== $('cMin')) $('cMin').value = s.minPowerThreshold;
-  if (s.deadband !== undefined && activeElement !== $('cDb')) $('cDb').value = s.deadband;
-  if (s.powerChangeThreshold !== undefined && activeElement !== $('cPct')) $('cPct').value = s.powerChangeThreshold;
-  if (s.maxBoilerTemp !== undefined && activeElement !== $('cMbt')) $('cMbt').value = s.maxBoilerTemp;
-  if (s.maxHeaterRodTemp !== undefined && activeElement !== $('cMht')) $('cMht').value = s.maxHeaterRodTemp;
-  if (s.correctionGain !== undefined && activeElement !== $('cGn')) $('cGn').value = (s.correctionGain * 100).toFixed(0);
-  if (s.pumpMinRuntime !== undefined && activeElement !== $('cPmr')) $('cPmr').value = s.pumpMinRuntime;
-  if (s.pumpCycleInterval !== undefined && activeElement !== $('cCyi')) $('cCyi').value = s.pumpCycleInterval;
-  if (s.pumpCycleDuration !== undefined && activeElement !== $('cCyd')) $('cCyd').value = s.pumpCycleDuration;
+  const skip = (id) => activeElement === $(id) || dirtyFields.has(id);
+  if (s.zeroFeedTarget !== undefined && !skip('cZft')) $('cZft').value = s.zeroFeedTarget;
+  if (s.maxHeatingPower !== undefined && !skip('cMax')) $('cMax').value = s.maxHeatingPower;
+  if (s.minPowerThreshold !== undefined && !skip('cMin')) $('cMin').value = s.minPowerThreshold;
+  if (s.deadband !== undefined && !skip('cDb')) $('cDb').value = s.deadband;
+  if (s.powerChangeThreshold !== undefined && !skip('cPct')) $('cPct').value = s.powerChangeThreshold;
+  if (s.maxBoilerTemp !== undefined && !skip('cMbt')) $('cMbt').value = s.maxBoilerTemp;
+  if (s.maxHeaterRodTemp !== undefined && !skip('cMht')) $('cMht').value = s.maxHeaterRodTemp;
+  if (s.correctionGain !== undefined && !skip('cGn')) $('cGn').value = (s.correctionGain * 100).toFixed(0);
+  if (s.pumpMinRuntime !== undefined && !skip('cPmr')) $('cPmr').value = s.pumpMinRuntime;
+  if (s.pumpCycleInterval !== undefined && !skip('cCyi')) $('cCyi').value = s.pumpCycleInterval;
+  if (s.pumpCycleDuration !== undefined && !skip('cCyd')) $('cCyd').value = s.pumpCycleDuration;
 
   // Network settings (only populate once on first load to avoid overwriting user edits)
   if (!netLoaded && s.netMode !== undefined) {
@@ -407,9 +412,9 @@ function render(s) {
     if (s.lanDns !== undefined) $('cLanDns').value = s.lanDns;
     netLoaded = true;
   }
-  if (s.onewirePin !== undefined && activeElement !== $('cOwPin')) $('cOwPin').value = s.onewirePin;
+  if (s.onewirePin !== undefined && !skip('cOwPin')) $('cOwPin').value = s.onewirePin;
   if (s.mqttStatusEnabled !== undefined && activeElement !== $('cMqttEn')) $('cMqttEn').checked = s.mqttStatusEnabled;
-  if (s.mqttStatusInterval !== undefined && activeElement !== $('cMqttInt')) $('cMqttInt').value = s.mqttStatusInterval;
+  if (s.mqttStatusInterval !== undefined && !skip('cMqttInt')) $('cMqttInt').value = s.mqttStatusInterval;
 
   // MQTT-Status in Headline
   if (s.mqttConnected !== undefined) {
@@ -443,6 +448,9 @@ function render(s) {
   $('bPump').className = 'blg ' + (pumpOn ? 'bg' : 'bm');
   const pumpMode = s.pumpmanualpower ? '(manuell)' : s.pumpautocontrolled ? '(automatisch)' : '';
   $('pumpStatus').textContent = pumpMode;
+  if (s.pumpCoastdown && s.pumpCoastdownSec > 0) {
+    $('pumpStatus').textContent = pumpMode + ' — Nachlauf ' + s.pumpCoastdownSec + 's';
+  }
   const upd = (id, v) => {
     const el = $(id);
     if (document.activeElement !== el && el.value !== String(v)) {
@@ -711,6 +719,7 @@ async function saveConfig() {
     const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     m.textContent = 'Gespeichert (NVS)';
+    dirtyFields.clear();
     setTimeout(()=>m.textContent='', 2000);
   } catch (e) {
     m.className = 'msg err'; m.textContent = 'Fehler: ' + e.message;
@@ -867,12 +876,16 @@ async function tempSave() {
 $('bTempScan').onclick = tempScan;
 $('bTempSave').onclick = tempSave;
 
-// Enter-Bestätigung in Eingabefeldern
+// Dirty-Tracking: Eingabefelder die der User verändert hat werden nicht
+// von SSE-Updates überschrieben. Erst beim Speichern (oder Verwerfen)
+// wird das Dirty-Flag gelöscht.
+const dirtyFields = new Set();
 ['cZft', 'cMax', 'cMin', 'cDb', 'cPct', 'cMbt', 'cMht', 'cGn', 'cPmr', 'cCyi', 'cCyd', 'cOwPin', 'cMqttInt'].forEach(id => {
+  $(id).addEventListener('input', () => dirtyFields.add(id));
   $(id).addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      saveConfig();
+      e.target.blur();
     }
   });
 });
